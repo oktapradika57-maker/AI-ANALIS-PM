@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 # 1. KONFIGURASI HALAMAN & CSS STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Dashboard SIRAPI - PM Monitoring",
+    page_title="Si AI - PM Monitoring",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
