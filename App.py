@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 
 # Konfigurasi Halaman Streamlit
 st.set_page_config(
-    page_title="SIRAPI - Dashboard Monitoring PM & Kurva S",
+    page_title="Si AI",
     page_icon="📊",
     layout="wide"
 )
