@@ -3,77 +3,74 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import os
 
 # ==========================================
-# 1. KONFIGURASI HALAMAN & CUSTOM CSS
+# 1. KONFIGURASI HALAMAN & CSS STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Dashboard SIRAPI - Kurva S",
+    page_title="Dashboard SIRAPI - PM Monitoring",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS untuk UI yang lebih Profesional
+# Custom CSS untuk Tampilan Profesional
 st.markdown("""
     <style>
-    /* Styling Dashboard Title */
-    .main-title { font-size: 32px; font-weight: 800; color: #0F172A; margin-bottom: 5px; }
-    .sub-title { font-size: 16px; color: #64748B; margin-bottom: 30px; }
+    .main-header { font-size: 28px; font-weight: 800; color: #0f4c75; margin-bottom: -10px;}
+    .sub-header { font-size: 16px; color: #6c757d; margin-bottom: 20px;}
     
-    /* Styling Metrics (KPI Cards) */
+    /* Styling untuk Metric Cards */
     div[data-testid="metric-container"] {
         background-color: #ffffff;
-        border: 1px solid #E2E8F0;
+        border: 1px solid #e0e0e0;
         padding: 15px 20px;
         border-radius: 10px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        border-left: 5px solid #2563EB;
+        box-shadow: 2px 4px 10px rgba(0, 0, 0, 0.05);
+        border-left: 5px solid #0f4c75;
     }
-    div[data-testid="metric-container"] > label { font-size: 14px; color: #64748B; font-weight: 600; }
-    div[data-testid="metric-container"] > div > div { font-size: 28px; font-weight: bold; color: #1E293B; }
-    
-    /* Tabel Styling */
-    .stDataFrame { border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+    div[data-testid="metric-container"] label {
+        font-size: 14px;
+        font-weight: 600;
+        color: #333333;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">📈 Dashboard Monitoring PM & Kurva S (SIRAPI)</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Integrasi data Preventive Maintenance (Site & Genset) dengan visualisasi progres otomatis.</div>', unsafe_allow_html=True)
-
+st.markdown('<div class="main-header">📈 Dashboard Monitoring Kurva S (SIRAPI)</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Monitoring Preventive Maintenance (PM Site & PM Genset) Terintegrasi</div>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. FUNGSI PENGOLAH DATA KURVA S
 # ==========================================
-@st.cache_data(show_spinner=False)
-def calculate_scurve(df_filtered, completed_statuses):
-    df_calc = df_filtered.copy()
-    df_calc['Schedule Date'] = pd.to_datetime(df_calc['Schedule Date'], errors='coerce')
-    df_calc['Submitted Date'] = pd.to_datetime(df_calc['Submitted Date'], errors='coerce')
+def calculate_scurve(df_filtered):
+    df_filtered = df_filtered.copy()
     
-    # Drop data tanpa tanggal schedule
-    df_calc = df_calc.dropna(subset=['Schedule Date'])
+    # Konversi ke datetime (handling error jika format salah)
+    df_filtered['Schedule Date'] = pd.to_datetime(df_filtered['Schedule Date'], errors='coerce')
+    df_filtered['Submitted Date'] = pd.to_datetime(df_filtered['Submitted Date'], errors='coerce')
     
-    total_sites = len(df_calc)
+    # Hapus baris yang tidak memiliki Schedule Date
+    df_filtered = df_filtered.dropna(subset=['Schedule Date'])
+    
+    total_sites = len(df_filtered)
     if total_sites == 0:
         return None, 0, 0, 0, 0
 
     weight_per_site = 100.0 / total_sites
     
-    min_sched = df_calc['Schedule Date'].min()
-    max_sched = df_calc['Schedule Date'].max()
+    min_sched = df_filtered['Schedule Date'].min()
+    max_sched = df_filtered['Schedule Date'].max()
     
-    # Filter status selesai berdasarkan input pengguna (Submitted / + Waiting Approval)
-    df_calc['Status_Clean'] = df_calc['Status'].astype(str).str.upper().str.strip()
-    df_submitted = df_calc[df_calc['Status_Clean'].isin(completed_statuses)]
+    # Definisi "Selesai" (SUBMITTED) - Bisa ditambahkan 'CLOSED' atau 'DONE' jika perlu
+    df_submitted = df_filtered[df_filtered['Status'].astype(str).str.upper() == 'SUBMITTED']
     completed_sites = len(df_submitted)
     
     if not df_submitted.empty:
         min_sub = df_submitted['Submitted Date'].min()
         max_sub = df_submitted['Submitted Date'].max()
-        start_date = min(min_sched, min_sub)
-        end_date = max(max_sched, max_sub)
+        start_date = min(min_sched, min_sub) if pd.notnull(min_sub) else min_sched
+        end_date = max(max_sched, max_sub) if pd.notnull(max_sub) else max_sched
     else:
         start_date = min_sched
         end_date = max_sched
@@ -82,14 +79,14 @@ def calculate_scurve(df_filtered, completed_statuses):
     all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
     timeline_df = pd.DataFrame({'Date': all_dates})
     
-    # Target Daily & Kumulatif
-    target_daily = df_calc.groupby('Schedule Date').size().reset_index(name='Target_Unit')
+    # --- TARGET ---
+    target_daily = df_filtered.groupby('Schedule Date').size().reset_index(name='Target_Unit')
     timeline_df = pd.merge(timeline_df, target_daily, left_on='Date', right_on='Schedule Date', how='left')
     timeline_df['Target_Unit'] = timeline_df['Target_Unit'].fillna(0)
     timeline_df['Target_Bobot'] = timeline_df['Target_Unit'] * weight_per_site
     timeline_df['Target_Kumulatif'] = timeline_df['Target_Bobot'].cumsum()
     
-    # Realisasi Daily & Kumulatif
+    # --- ACTUAL ---
     if not df_submitted.empty:
         actual_daily = df_submitted.groupby('Submitted Date').size().reset_index(name='Actual_Unit')
         timeline_df = pd.merge(timeline_df, actual_daily, left_on='Date', right_on='Submitted Date', how='left')
@@ -97,15 +94,12 @@ def calculate_scurve(df_filtered, completed_statuses):
         timeline_df['Actual_Bobot'] = timeline_df['Actual_Unit'] * weight_per_site
         timeline_df['Actual_Kumulatif'] = timeline_df['Actual_Bobot'].cumsum()
         
-        # Plot garis realisasi hanya sampai tanggal cutoff terakhir
+        # Plot garis realisasi hanya sampai tanggal cutoff
         timeline_df['Actual_Kumulatif_Plot'] = timeline_df.apply(
             lambda r: r['Actual_Kumulatif'] if r['Date'] <= max_sub else np.nan, axis=1
         )
-        
-        # Ambil nilai aktual terakhir
-        current_actual_pct = timeline_df.loc[timeline_df['Date'] == max_sub, 'Actual_Kumulatif'].values[0]
-        # Deviasi = Realisasi Hari Ini - Target Hari Ini (pada tanggal realisasi terakhir)
-        current_target_pct = timeline_df.loc[timeline_df['Date'] == max_sub, 'Target_Kumulatif'].values[0]
+        current_actual_pct = timeline_df.loc[timeline_df['Date'] == max_sub, 'Actual_Kumulatif'].values[0] if max_sub else 0
+        current_target_pct = timeline_df.loc[timeline_df['Date'] == max_sub, 'Target_Kumulatif'].values[0] if max_sub else 0
         deviation = current_actual_pct - current_target_pct
     else:
         timeline_df['Actual_Unit'] = 0
@@ -114,262 +108,199 @@ def calculate_scurve(df_filtered, completed_statuses):
         timeline_df['Actual_Kumulatif_Plot'] = np.nan
         current_actual_pct = 0.0
         deviation = 0.0
-
-    # Kalkulasi Deviasi harian untuk tabel
-    timeline_df['Deviasi_Harian'] = timeline_df['Actual_Kumulatif'] - timeline_df['Target_Kumulatif']
+        
+    # Kolom Deviasi Harian untuk Tabel
+    timeline_df['Deviasi'] = timeline_df['Actual_Kumulatif'] - timeline_df['Target_Kumulatif']
 
     return timeline_df, total_sites, completed_sites, current_actual_pct, deviation
 
-
 # ==========================================
-# 3. SIDEBAR: UPLOAD & PENGATURAN LOGIKA
+# 3. SIDEBAR & FILE UPLOAD (MULTI-FILE)
 # ==========================================
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3256/3256114.png", width=60)
-st.sidebar.header("📂 Data Source")
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3256/3256013.png", width=60)
+st.sidebar.header("📁 Upload Data")
 
-# Multi-file uploader
+# Menggunakan accept_multiple_files=True
 uploaded_files = st.sidebar.file_uploader(
-    "Upload File Excel PM (Bisa >1 file)", 
-    type=["xlsx", "xls"],
+    "Upload File PM Site & PM Genset (Excel)", 
+    type=["xlsx", "xls"], 
     accept_multiple_files=True
 )
 
 if uploaded_files:
     try:
-        # Menggabungkan semua file yang diupload
-        dfs = []
+        # Menggabungkan semua file yang diupload menjadi satu DataFrame
+        df_list = []
         for file in uploaded_files:
-            df_temp = pd.read_excel(file)
+            temp_df = pd.read_excel(file)
+            temp_df['Sumber File'] = file.name # Menambahkan penanda file (PMS/PMG)
+            df_list.append(temp_df)
             
-            # Penamaan Tipe PM berdasarkan nama file (Otomatis deteksi Site / Genset)
-            filename_lower = file.name.lower()
-            if "genset" in filename_lower:
-                df_temp['Tipe Data'] = "PM Genset"
-            elif "site" in filename_lower:
-                df_temp['Tipe Data'] = "PM Site"
-            else:
-                df_temp['Tipe Data'] = f"File: {file.name}"
-                
-            dfs.append(df_temp)
-            
-        df_raw = pd.concat(dfs, ignore_index=True)
+        df_raw = pd.concat(df_list, ignore_index=True)
         
         # Validasi Kolom Minimum
         required_cols = ['Schedule Date', 'Status', 'NOP']
         missing_cols = [col for col in required_cols if col not in df_raw.columns]
         if missing_cols:
-            st.error(f"❌ File tidak valid! Kekurangan kolom dasar: {missing_cols}")
+            st.error(f"File tidak valid. Kurang kolom berikut: {missing_cols}")
             st.stop()
 
         # ==========================================
-        # 4. SIDEBAR: FILTER DATA
+        # 4. FILTER PARAMETER
         # ==========================================
         st.sidebar.markdown("---")
         st.sidebar.header("🔍 Filter Parameter")
         
-        # 4A. Filter Tipe Data (Keseluruhan / PM Site / PM Genset)
-        list_tipe = ["Gabungan (Semua Data)"] + sorted(list(df_raw['Tipe Data'].unique()))
-        selected_tipe = st.sidebar.selectbox("Pilih Ruang Lingkup:", list_tipe)
-        
-        # 4B. Filter NOP
+        # Opsi Waiting Approval / Takeout
+        st.sidebar.markdown("**Opsi Perhitungan Status:**")
+        include_waiting = st.sidebar.checkbox("✅ Hitung 'Waiting Approval' sebagai Target", value=True, 
+                                              help="Jika di-uncheck, site dengan status Waiting Approval akan dianggap Takeout dan dikeluarkan dari perhitungan.")
+
+        # Filter Sumber File (Pemilih PMS / PMG / Total)
+        list_sumber = ["Semua File (Gabungan)"] + sorted(df_raw['Sumber File'].unique().tolist())
+        selected_sumber = st.sidebar.selectbox("Tipe PM (Sumber File):", list_sumber)
+
+        # Filter NOP
         list_nop = ["Semua NOP"] + sorted([str(x) for x in df_raw['NOP'].dropna().unique()])
         selected_nop = st.sidebar.selectbox("Pilih NOP:", list_nop)
         
-        # 4C. Filter Cluster (Jika ada)
+        # Filter Cluster (Jika Ada)
         if 'Cluster' in df_raw.columns:
             list_cluster = ["Semua Cluster"] + sorted([str(x) for x in df_raw['Cluster'].dropna().unique()])
             selected_cluster = st.sidebar.selectbox("Pilih Cluster:", list_cluster)
         else:
             selected_cluster = "Semua Cluster"
 
-        # 4D. Pengaturan Status (Fitur Waiting Approval)
-        st.sidebar.markdown("---")
-        st.sidebar.header("⚙️ Konfigurasi Perhitungan")
-        include_wa = st.sidebar.checkbox(
-            "Hitung 'WAITING APPROVAL' sebagai Selesai?", 
-            value=True, 
-            help="Jika dicentang, tiket dengan status Waiting Approval akan dianggap sudah realisasi pada Kurva S. Hilangkan centang jika status ini berpotensi Takeout."
-        )
-        
-        # Logika penetapan status selesai
-        completed_statuses = ['SUBMITTED']
-        if include_wa:
-            completed_statuses.append('WAITING APPROVAL')
-
-
-        # ==========================================
-        # 5. PROSES FILTERING
-        # ==========================================
+        # Proses Filtering Data
         df_filtered = df_raw.copy()
         
-        if selected_tipe != "Gabungan (Semua Data)":
-            df_filtered = df_filtered[df_filtered['Tipe Data'] == selected_tipe]
+        # Terapkan filter File
+        if selected_sumber != "Semua File (Gabungan)":
+            df_filtered = df_filtered[df_filtered['Sumber File'] == selected_sumber]
+            
+        # Terapkan filter NOP & Cluster
         if selected_nop != "Semua NOP":
             df_filtered = df_filtered[df_filtered['NOP'] == selected_nop]
         if selected_cluster != "Semua Cluster":
             df_filtered = df_filtered[df_filtered['Cluster'] == selected_cluster]
-
+            
+        # Terapkan logika Waiting Approval
+        if not include_waiting:
+            # Sesuaikan string dengan penulisan di file excel Anda
+            df_filtered = df_filtered[~df_filtered['Status'].astype(str).str.upper().str.contains('WAITING APPROVAL')]
 
         # ==========================================
-        # 6. TAMPILAN DASHBOARD UTAMA
+        # 5. PERHITUNGAN & TAMPILAN DASHBOARD
         # ==========================================
-        timeline_df, total_sites, completed_sites, current_actual_pct, deviation = calculate_scurve(df_filtered, completed_statuses)
+        timeline_df, total_sites, completed_sites, current_actual_pct, deviation = calculate_scurve(df_filtered)
 
-        if timeline_df is not None and total_sites > 0:
+        if timeline_df is not None:
             
-            # --- SUMMARY KECIL PER TIPE DATA ---
-            st.markdown("##### 📌 Rekap Total Data Ter-upload:")
-            summary_df = df_raw.groupby('Tipe Data').size().reset_index(name='Total Tiket')
-            st.dataframe(summary_df.T, header=False, use_container_width=True)
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            # --- METRIC CARDS ---
+            # --- KPI Cards ---
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("🎯 Total Target Ticket", f"{total_sites:,} Unit")
-            col2.metric("✅ Ticket Selesai", f"{completed_sites:,} Unit")
+            col1.metric("📌 Total Target Site", f"{total_sites:,.0f} Unit", help="Total gabungan sesuai filter yang dipilih")
+            col2.metric("✅ Site Selesai (Submitted)", f"{completed_sites:,.0f} Unit")
             col3.metric("📈 Progres Realisasi", f"{current_actual_pct:.2f}%")
-            col4.metric(
-                "⚖️ Deviasi (vs Target)", 
-                f"{deviation:+.2f}%", 
-                delta_color="normal" if deviation >= 0 else "inverse"
-            )
+            col4.metric("⚖️ Deviasi", f"{deviation:+.2f}%", delta_color="normal")
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # --- PLOTLY S-CURVE (PROFESSIONAL LOOK) ---
+            # --- Grafik Kurva S (Plotly Professional) ---
             fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-            # Garis Target (Biru Tua)
-            fig.add_trace(
-                go.Scatter(
-                    x=timeline_df['Date'], 
-                    y=timeline_df['Target_Kumulatif'],
-                    mode='lines',
-                    name='Target Kumulatif (%)',
-                    line=dict(color='#1E3A8A', width=4, dash='dot'),
-                    hovertemplate="<b>Target:</b> %{y:.2f}%<extra></extra>"
-                ),
-                secondary_y=False
-            )
-
-            # Garis Aktual (Hijau Terang)
-            fig.add_trace(
-                go.Scatter(
-                    x=timeline_df['Date'], 
-                    y=timeline_df['Actual_Kumulatif_Plot'],
-                    mode='lines+markers',
-                    name='Realisasi Kumulatif (%)',
-                    line=dict(color='#10B981', width=5),
-                    marker=dict(size=8, symbol='circle', color='#10B981', line=dict(width=2, color='white')),
-                    hovertemplate="<b>Realisasi:</b> %{y:.2f}%<extra></extra>"
-                ),
-                secondary_y=False
-            )
-
-            # Bar Chart Target Unit (Abu-abu / Light Blue)
+            # Bar Chart Target (Background)
             fig.add_trace(
                 go.Bar(
                     x=timeline_df['Date'],
                     y=timeline_df['Target_Unit'],
                     name='Target Harian (Unit)',
                     opacity=0.3,
-                    marker_color='#94A3B8',
-                    hovertemplate="<b>Target Harian:</b> %{y} Unit<extra></extra>"
+                    marker_color='#cbd5e1', # Warna abu-abu elegan
+                    hoverinfo='x+y'
                 ),
                 secondary_y=True
             )
 
-            # Formatting Layout
-            wa_text = "Termasuk WA" if include_wa else "Tanpa WA"
-            fig.update_layout(
-                title=dict(
-                    text=f"Kurva S Progres - {selected_tipe}<br><span style='font-size:14px;color:gray'>Filter: NOP ({selected_nop}) | Status Kalkulasi: Submitted & {wa_text}</span>",
-                    font=dict(size=20, color='#0F172A'),
-                    y=0.95
+            # Garis Target Kumulatif (Garis Putus-putus)
+            fig.add_trace(
+                go.Scatter(
+                    x=timeline_df['Date'], 
+                    y=timeline_df['Target_Kumulatif'],
+                    mode='lines',
+                    name='Plan Kumulatif (%)',
+                    line=dict(color='#0f4c75', width=3, dash='dash'),
                 ),
-                hovermode="x unified",
-                legend=dict(
-                    orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5,
-                    bgcolor='rgba(255, 255, 255, 0.8)', bordercolor='#E2E8F0', borderwidth=1
-                ),
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                height=550,
-                margin=dict(l=20, r=20, t=80, b=20)
-            )
-
-            # Styling Axes
-            fig.update_xaxes(
-                title_text="Timeline Pekerjaan", 
-                tickformat="%d %b '%y", 
-                showgrid=True, gridcolor='#F1F5F9', gridwidth=1,
-                tickfont=dict(color='#64748B')
-            )
-            fig.update_yaxes(
-                title_text="Progres Kumulatif (%)", 
-                range=[0, 105], 
-                showgrid=True, gridcolor='#E2E8F0', gridwidth=1,
-                titlefont=dict(color='#1E3A8A', weight='bold'),
-                tickfont=dict(color='#1E3A8A'),
                 secondary_y=False
             )
-            fig.update_yaxes(
-                title_text="Jumlah Unit (Daily)", 
-                showgrid=False, 
-                titlefont=dict(color='#64748B'),
-                tickfont=dict(color='#64748B'),
-                secondary_y=True
+
+            # Garis Realisasi Kumulatif (Solid + Area bawah berwarna)
+            fig.add_trace(
+                go.Scatter(
+                    x=timeline_df['Date'], 
+                    y=timeline_df['Actual_Kumulatif_Plot'],
+                    mode='lines+markers',
+                    name='Actual Kumulatif (%)',
+                    line=dict(color='#2ca02c', width=4),
+                    marker=dict(size=6, color='#2ca02c'),
+                    fill='tozeroy', # Mengisi warna area ke bawah grafik
+                    fillcolor='rgba(44, 160, 44, 0.1)'
+                ),
+                secondary_y=False
             )
+
+            # Styling Layout Grafik
+            title_text = f"<b>S-Curve Gabungan PM (Monitoring)</b>"
+            if selected_sumber != "Semua File (Gabungan)":
+                title_text = f"<b>S-Curve {selected_sumber}</b>"
+
+            fig.update_layout(
+                title=dict(text=title_text, font=dict(size=20, color='#333333')),
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(255,255,255,0.8)"),
+                height=500,
+                margin=dict(l=40, r=40, t=60, b=40),
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+            )
+
+            # Konfigurasi Grid & Axis
+            fig.update_xaxes(title_text="", tickformat="%d %b '%y", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
+            fig.update_yaxes(title_text="Progres Kumulatif (%)", range=[0, 105], showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1', secondary_y=False)
+            fig.update_yaxes(title_text="Volume (Unit)", showgrid=False, secondary_y=True)
 
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- TABEL DATA & EXPORT ---
-            st.markdown("### 📋 Rincian Data")
-            tab1, tab2 = st.tabs(["📊 Tabel Rekap Harian Kurva S", "🗂️ Data Ticket Terfilter (Raw)"])
+            # --- Tabel Detail ---
+            st.markdown("### 📋 Detail Data Ticket PM")
+            tab1, tab2 = st.tabs(["📊 Tabel Rekap Harian (Kurva S)", "🗃️ Raw Data Ticket Terfilter"])
             
             with tab1:
-                rekap_export = timeline_df[['Date', 'Target_Unit', 'Target_Kumulatif', 'Actual_Unit', 'Actual_Kumulatif', 'Deviasi_Harian']].copy()
-                rekap_export.columns = ['Tanggal', 'Target Harian (Unit)', 'Target Kumulatif (%)', 'Realisasi Harian (Unit)', 'Realisasi Kumulatif (%)', 'Deviasi Harian (%)']
-                
-                # Format desimal agar rapi
-                styled_rekap = rekap_export.style.format({
+                rekap_export = timeline_df[['Date', 'Target_Unit', 'Target_Kumulatif', 'Actual_Unit', 'Actual_Kumulatif', 'Deviasi']].copy()
+                rekap_export.columns = ['Tanggal', 'Target Harian (Site)', 'Target Kumulatif (%)', 'Realisasi Harian (Site)', 'Realisasi Kumulatif (%)', 'Deviasi (%)']
+                # Format decimal agar rapi di layar
+                st.dataframe(rekap_export.style.format({
                     'Target Kumulatif (%)': '{:.2f}%',
                     'Realisasi Kumulatif (%)': '{:.2f}%',
-                    'Deviasi Harian (%)': '{:+.2f}%'
-                }).applymap(
-                    lambda val: 'color: red; font-weight:bold;' if val < 0 else 'color: green; font-weight:bold;', 
-                    subset=['Deviasi Harian (%)']
-                )
-                
-                st.dataframe(styled_rekap, use_container_width=True)
-
+                    'Deviasi (%)': '{:.2f}%'
+                }), use_container_width=True)
+            
             with tab2:
                 st.dataframe(df_filtered, use_container_width=True)
 
         else:
-            st.warning("⚠️ Data tidak ditemukan untuk kombinasi filter yang dipilih atau tidak ada tanggal schedule.")
+            st.warning("⚠️ Data tidak ditemukan. Silakan cek kembali rentang tanggal, status, atau filter yang Anda pilih.")
 
     except Exception as e:
-        st.error(f"❌ Terjadi kesalahan sistem: {e}")
-        st.info("Pastikan format Excel Anda tidak *corrupt* dan kolom tanggal valid.")
+        st.error(f"❌ Terjadi kesalahan saat memproses file: {e}")
 
 else:
-    # Tampilan Awal Landing Page
-    st.info("👈 Silakan upload file Excel PM Anda pada sidebar (Bisa lebih dari 1 file sekaligus).")
+    # Tampilan Awal (Kosong)
+    st.info("👈 Silakan upload file Excel PM Site dan/atau PM Genset Anda pada sidebar sebelah kiri untuk memulai.")
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("""
-        ### 💡 Tips Penamaan File:
-        Agar sistem otomatis mendeteksi apakah data tersebut PM Site atau PM Genset, beri nama file Anda seperti:
-        * `Rekap_PM_Site_Agustus.xlsx`
-        * `Data_PM_Genset_Q3.xlsx`
-        """)
-    with col_b:
-        st.markdown("""
-        ### 📋 Syarat Kolom Minimal:
-        * **NOP** (Area/Wilayah)
-        * **Schedule Date** (Tanggal Rencana)
-        * **Submitted Date** (Tanggal Aktual Selesai)
-        * **Status** (SUBMITTED, WAITING APPROVAL, dll)
-        """)
+    st.markdown("""
+    **Panduan Penggunaan:**
+    1. Anda dapat mengunggah **1 atau lebih file sekaligus** (misal: File PM Site.xlsx dan File PM Genset.xlsx).
+    2. Sistem akan **menggabungkan (akumulasi)** seluruh total target dan realisasi secara otomatis.
+    3. Anda dapat melihat grafik masing-masing file melalui filter **"Tipe PM (Sumber File)"**.
+    4. Centang atau hilangkan centang opsi **"Waiting Approval"** pada filter untuk menghitung atau mengeluarkan site berstatus tersebut (*Takeout*).
+    """)
