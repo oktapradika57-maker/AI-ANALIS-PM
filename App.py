@@ -43,7 +43,7 @@ st.markdown('<div class="sub-header">Monitoring Preventive Maintenance (PM Site 
 # ==========================================
 # 2. FUNGSI PENGOLAH DATA KURVA S
 # ==========================================
-def calculate_scurve(df_filtered):
+def calculate_scurve(df_filtered, completed_statuses):
     df_filtered = df_filtered.copy()
     
     # Konversi ke datetime (handling error jika format salah)
@@ -62,8 +62,9 @@ def calculate_scurve(df_filtered):
     min_sched = df_filtered['Schedule Date'].min()
     max_sched = df_filtered['Schedule Date'].max()
     
-    # Definisi "Selesai" (SUBMITTED) - Bisa ditambahkan 'CLOSED' atau 'DONE' jika perlu
-    df_submitted = df_filtered[df_filtered['Status'].astype(str).str.upper() == 'SUBMITTED']
+    # --- LOGIKA BARU: Filter berdasarkan multi-status pilihan user ---
+    # Memastikan perbandingan ke huruf besar semua agar tidak sensitif huruf besar/kecil
+    df_submitted = df_filtered[df_filtered['Status'].astype(str).str.upper().isin(completed_statuses)]
     completed_sites = len(df_submitted)
     
     if not df_submitted.empty:
@@ -79,14 +80,14 @@ def calculate_scurve(df_filtered):
     all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
     timeline_df = pd.DataFrame({'Date': all_dates})
     
-    # --- TARGET ---
+    # --- TARGET (Plan) ---
     target_daily = df_filtered.groupby('Schedule Date').size().reset_index(name='Target_Unit')
     timeline_df = pd.merge(timeline_df, target_daily, left_on='Date', right_on='Schedule Date', how='left')
     timeline_df['Target_Unit'] = timeline_df['Target_Unit'].fillna(0)
     timeline_df['Target_Bobot'] = timeline_df['Target_Unit'] * weight_per_site
     timeline_df['Target_Kumulatif'] = timeline_df['Target_Bobot'].cumsum()
     
-    # --- ACTUAL ---
+    # --- ACTUAL (Realisasi) ---
     if not df_submitted.empty:
         actual_daily = df_submitted.groupby('Submitted Date').size().reset_index(name='Actual_Unit')
         timeline_df = pd.merge(timeline_df, actual_daily, left_on='Date', right_on='Submitted Date', how='left')
@@ -94,7 +95,7 @@ def calculate_scurve(df_filtered):
         timeline_df['Actual_Bobot'] = timeline_df['Actual_Unit'] * weight_per_site
         timeline_df['Actual_Kumulatif'] = timeline_df['Actual_Bobot'].cumsum()
         
-        # Plot garis realisasi hanya sampai tanggal cutoff
+        # Plot garis realisasi hanya sampai tanggal cutoff penyelesaian terakhir
         timeline_df['Actual_Kumulatif_Plot'] = timeline_df.apply(
             lambda r: r['Actual_Kumulatif'] if r['Date'] <= max_sub else np.nan, axis=1
         )
@@ -115,12 +116,11 @@ def calculate_scurve(df_filtered):
     return timeline_df, total_sites, completed_sites, current_actual_pct, deviation
 
 # ==========================================
-# 3. SIDEBAR & FILE UPLOAD (MULTI-FILE)
+# 3. SIDEBAR & MULTI-FILE UPLOAD
 # ==========================================
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3256/3256013.png", width=60)
 st.sidebar.header("📁 Upload Data")
 
-# Menggunakan accept_multiple_files=True
 uploaded_files = st.sidebar.file_uploader(
     "Upload File PM Site & PM Genset (Excel)", 
     type=["xlsx", "xls"], 
@@ -139,24 +139,42 @@ if uploaded_files:
         df_raw = pd.concat(df_list, ignore_index=True)
         
         # Validasi Kolom Minimum
-        required_cols = ['Schedule Date', 'Status', 'NOP']
+        required_cols = ['Schedule Date', 'Submitted Date', 'Status', 'NOP']
         missing_cols = [col for col in required_cols if col not in df_raw.columns]
         if missing_cols:
             st.error(f"File tidak valid. Kurang kolom berikut: {missing_cols}")
             st.stop()
 
+        # Ambil daftar semua status unik dari data mentah
+        all_unique_statuses = sorted(df_raw['Status'].dropna().astype(str).str.upper().unique().tolist())
+
         # ==========================================
         # 4. FILTER PARAMETER
         # ==========================================
         st.sidebar.markdown("---")
-        st.sidebar.header("🔍 Filter Parameter")
+        st.sidebar.header("🔍 Pengaturan Logika Kurva")
         
-        # Opsi Waiting Approval / Takeout
-        st.sidebar.markdown("**Opsi Perhitungan Status:**")
-        include_waiting = st.sidebar.checkbox("✅ Hitung 'Waiting Approval' sebagai Target", value=True, 
-                                              help="Jika di-uncheck, site dengan status Waiting Approval akan dianggap Takeout dan dikeluarkan dari perhitungan.")
+        # 4A. Definisi Status "Selesai" (Multiselect Baru)
+        # Mencari default 'SUBMITTED' dan 'CLOSED' jika ada di dalam data
+        default_completed = [s for s in ['SUBMITTED', 'CLOSED', 'DONE', 'APPROVED'] if s in all_unique_statuses]
+        if not default_completed and all_unique_statuses:
+            default_completed = [all_unique_statuses[0]]
+            
+        selected_completed = st.sidebar.multiselect(
+            "1. Status yang dihitung selesai (Actual):",
+            options=all_unique_statuses,
+            default=default_completed,
+            help="Status yang dipilih di sini akan menaikkan kurva hijau (Realisasi)."
+        )
+        
+        # 4B. Opsi Waiting Approval / Takeout
+        include_waiting = st.sidebar.checkbox("2. Hitung 'Waiting Approval' sbg Target", value=True, 
+                                              help="Uncheck jika site Waiting Approval sedang di-hold (Takeout) dan tidak ingin dimasukkan dalam pembagi bobot 100%.")
 
-        # Filter Sumber File (Pemilih PMS / PMG / Total)
+        st.sidebar.markdown("---")
+        st.sidebar.header("🎯 Filter Area & Tipe")
+        
+        # Filter Sumber File
         list_sumber = ["Semua File (Gabungan)"] + sorted(df_raw['Sumber File'].unique().tolist())
         selected_sumber = st.sidebar.selectbox("Tipe PM (Sumber File):", list_sumber)
 
@@ -164,42 +182,41 @@ if uploaded_files:
         list_nop = ["Semua NOP"] + sorted([str(x) for x in df_raw['NOP'].dropna().unique()])
         selected_nop = st.sidebar.selectbox("Pilih NOP:", list_nop)
         
-        # Filter Cluster (Jika Ada)
+        # Filter Cluster
         if 'Cluster' in df_raw.columns:
             list_cluster = ["Semua Cluster"] + sorted([str(x) for x in df_raw['Cluster'].dropna().unique()])
             selected_cluster = st.sidebar.selectbox("Pilih Cluster:", list_cluster)
         else:
             selected_cluster = "Semua Cluster"
 
-        # Proses Filtering Data
+        # --- PROSES DATA BERDASARKAN FILTER ---
         df_filtered = df_raw.copy()
         
-        # Terapkan filter File
         if selected_sumber != "Semua File (Gabungan)":
             df_filtered = df_filtered[df_filtered['Sumber File'] == selected_sumber]
             
-        # Terapkan filter NOP & Cluster
         if selected_nop != "Semua NOP":
             df_filtered = df_filtered[df_filtered['NOP'] == selected_nop]
+            
         if selected_cluster != "Semua Cluster":
             df_filtered = df_filtered[df_filtered['Cluster'] == selected_cluster]
             
-        # Terapkan logika Waiting Approval
+        # Logika Takeout Waiting Approval
         if not include_waiting:
-            # Sesuaikan string dengan penulisan di file excel Anda
             df_filtered = df_filtered[~df_filtered['Status'].astype(str).str.upper().str.contains('WAITING APPROVAL')]
 
         # ==========================================
         # 5. PERHITUNGAN & TAMPILAN DASHBOARD
         # ==========================================
-        timeline_df, total_sites, completed_sites, current_actual_pct, deviation = calculate_scurve(df_filtered)
+        # Memasukkan array status selesai (selected_completed) ke dalam fungsi
+        timeline_df, total_sites, completed_sites, current_actual_pct, deviation = calculate_scurve(df_filtered, selected_completed)
 
         if timeline_df is not None:
             
             # --- KPI Cards ---
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("📌 Total Target Site", f"{total_sites:,.0f} Unit", help="Total gabungan sesuai filter yang dipilih")
-            col2.metric("✅ Site Selesai (Submitted)", f"{completed_sites:,.0f} Unit")
+            col1.metric("📌 Total Target Site", f"{total_sites:,.0f} Unit", help="Total site dikurangi takeout (jika ada)")
+            col2.metric("✅ Site Terealisasi", f"{completed_sites:,.0f} Unit", help="Jumlah site dengan status yang Anda pilih sebagai 'Selesai'")
             col3.metric("📈 Progres Realisasi", f"{current_actual_pct:.2f}%")
             col4.metric("⚖️ Deviasi", f"{deviation:+.2f}%", delta_color="normal")
 
@@ -208,14 +225,14 @@ if uploaded_files:
             # --- Grafik Kurva S (Plotly Professional) ---
             fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-            # Bar Chart Target (Background)
+            # Bar Chart Target Harian
             fig.add_trace(
                 go.Bar(
                     x=timeline_df['Date'],
                     y=timeline_df['Target_Unit'],
                     name='Target Harian (Unit)',
                     opacity=0.3,
-                    marker_color='#cbd5e1', # Warna abu-abu elegan
+                    marker_color='#cbd5e1', 
                     hoverinfo='x+y'
                 ),
                 secondary_y=True
@@ -242,7 +259,7 @@ if uploaded_files:
                     name='Actual Kumulatif (%)',
                     line=dict(color='#2ca02c', width=4),
                     marker=dict(size=6, color='#2ca02c'),
-                    fill='tozeroy', # Mengisi warna area ke bawah grafik
+                    fill='tozeroy', 
                     fillcolor='rgba(44, 160, 44, 0.1)'
                 ),
                 secondary_y=False
@@ -263,7 +280,6 @@ if uploaded_files:
                 paper_bgcolor='white',
             )
 
-            # Konfigurasi Grid & Axis
             fig.update_xaxes(title_text="", tickformat="%d %b '%y", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
             fig.update_yaxes(title_text="Progres Kumulatif (%)", range=[0, 105], showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1', secondary_y=False)
             fig.update_yaxes(title_text="Volume (Unit)", showgrid=False, secondary_y=True)
@@ -277,7 +293,6 @@ if uploaded_files:
             with tab1:
                 rekap_export = timeline_df[['Date', 'Target_Unit', 'Target_Kumulatif', 'Actual_Unit', 'Actual_Kumulatif', 'Deviasi']].copy()
                 rekap_export.columns = ['Tanggal', 'Target Harian (Site)', 'Target Kumulatif (%)', 'Realisasi Harian (Site)', 'Realisasi Kumulatif (%)', 'Deviasi (%)']
-                # Format decimal agar rapi di layar
                 st.dataframe(rekap_export.style.format({
                     'Target Kumulatif (%)': '{:.2f}%',
                     'Realisasi Kumulatif (%)': '{:.2f}%',
@@ -294,13 +309,4 @@ if uploaded_files:
         st.error(f"❌ Terjadi kesalahan saat memproses file: {e}")
 
 else:
-    # Tampilan Awal (Kosong)
     st.info("👈 Silakan upload file Excel PM Site dan/atau PM Genset Anda pada sidebar sebelah kiri untuk memulai.")
-    
-    st.markdown("""
-    **Panduan Penggunaan:**
-    1. Anda dapat mengunggah **1 atau lebih file sekaligus** (misal: File PM Site.xlsx dan File PM Genset.xlsx).
-    2. Sistem akan **menggabungkan (akumulasi)** seluruh total target dan realisasi secara otomatis.
-    3. Anda dapat melihat grafik masing-masing file melalui filter **"Tipe PM (Sumber File)"**.
-    4. Centang atau hilangkan centang opsi **"Waiting Approval"** pada filter untuk menghitung atau mengeluarkan site berstatus tersebut (*Takeout*).
-    """)
