@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 # 1. KONFIGURASI HALAMAN & CSS STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Si AI - PM Monitoring",
+    page_title="Dashboard SIRAPI - PM Monitoring",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -33,12 +33,11 @@ st.markdown("""
         font-weight: 600;
         color: #333333;
     }
-    /* Memperbaiki tampilan tabel styling */
     .dataframe-container { margin-bottom: 30px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">📈 Dashboard Monitoring Kurva S & Leaderboard (SI AI)</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📈 Dashboard Monitoring Kurva S & Leaderboard (SIRAPI)</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Monitoring Preventive Maintenance (PM Site & PM Genset) Terintegrasi</div>', unsafe_allow_html=True)
 
 # ==========================================
@@ -104,32 +103,28 @@ def calculate_scurve(df_filtered, completed_statuses):
     return timeline_df, total_sites, completed_sites, current_actual_pct, deviation
 
 def generate_leaderboard(df_filtered, completed_statuses):
-    """Menghasilkan dataframe leaderboard menyerupai Pivot Table hierarki NOP & Tipe PM"""
     if df_filtered.empty:
         return pd.DataFrame()
 
-    # Hitung Agregat per NOP
+    # Hitung Agregat Keseluruhan per NOP (Total dari seluruh NOP)
     agg_nop = df_filtered.groupby('NOP').agg(
         Count_Site=('NOP', 'count'),
         Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin(completed_statuses).sum())
     ).reset_index()
     agg_nop['% Ach'] = (agg_nop['Total_Closed'] / agg_nop['Count_Site'] * 100).fillna(0)
-    # Penentuan Rank berdasarkan % Ach terbesar
     agg_nop['Rank'] = agg_nop['% Ach'].rank(method='min', ascending=False).astype(int)
 
-    # Hitung Agregat Rincian per NOP dan Sumber File (Tipe PM)
+    # Hitung Rincian
     agg_detail = df_filtered.groupby(['NOP', 'Sumber File']).agg(
         Count_Site=('NOP', 'count'),
         Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin(completed_statuses).sum())
     ).reset_index()
     agg_detail['% Ach'] = (agg_detail['Total_Closed'] / agg_detail['Count_Site'] * 100).fillna(0)
 
-    # Susun ulang ke dalam bentuk list untuk tampilan hierarki
     records = []
     grand_site = 0
     grand_closed = 0
 
-    # Urutkan berdasarkan Rank NOP
     for _, row in agg_nop.sort_values('Rank').iterrows():
         nop_name = row['NOP']
         records.append({
@@ -137,13 +132,12 @@ def generate_leaderboard(df_filtered, completed_statuses):
             'PM Status': 'TOTAL NOP',
             'Count of Site': row['Count_Site'],
             'Total Closed': row['Total_Closed'],
-            '% Ach': row['% Ach'] / 100.0, # Format desimal untuk persentase Streamlit
+            '% Ach': row['% Ach'] / 100.0,
             'Rank': row['Rank']
         })
         grand_site += row['Count_Site']
         grand_closed += row['Total_Closed']
 
-        # Masukkan detail (PMS/PMG) di bawah NOP tersebut
         details = agg_detail[agg_detail['NOP'] == nop_name]
         for _, d_row in details.iterrows():
             tipe_pm = str(d_row['Sumber File']).replace('.xlsx', '').replace('.xls', '')
@@ -156,7 +150,6 @@ def generate_leaderboard(df_filtered, completed_statuses):
                 'Rank': ""
             })
 
-    # Tambahkan baris Grand Total
     grand_pct = (grand_closed / grand_site) if grand_site > 0 else 0
     records.append({
         'NOP': 'Grand Total',
@@ -220,15 +213,12 @@ if uploaded_files:
         st.sidebar.markdown("---")
         st.sidebar.header("🎯 Filter Area & Tipe")
         
-        # Filter Multiselect Tipe PM
         list_sumber = sorted(df_raw['Sumber File'].unique().tolist())
         selected_sumber = st.sidebar.multiselect("Tipe PM (Sumber File):", list_sumber, default=list_sumber)
 
-        # Filter MULTISELECT NOP
         list_nop = sorted([str(x) for x in df_raw['NOP'].dropna().unique()])
         selected_nop = st.sidebar.multiselect("Pilih NOP:", list_nop, default=list_nop)
         
-        # Filter Cluster
         if 'Cluster' in df_raw.columns:
             list_cluster = ["Semua Cluster"] + sorted([str(x) for x in df_raw['Cluster'].dropna().unique()])
             selected_cluster = st.sidebar.selectbox("Pilih Cluster:", list_cluster)
@@ -256,21 +246,48 @@ if uploaded_files:
         timeline_df, total_sites, completed_sites, current_actual_pct, deviation = calculate_scurve(df_filtered, selected_completed)
 
         if timeline_df is not None:
-            # --- KPI Cards ---
+            # --- LOGIKA PENAMAAN DINAMIS (SITE / GENSET / GABUNGAN) ---
+            sumber_unik = df_filtered['Sumber File'].astype(str).str.upper().unique()
+            is_pms = any('SITE' in s or 'PMS' in s for s in sumber_unik)
+            is_pmg = any('GENSET' in s or 'PMG' in s for s in sumber_unik)
+            
+            if is_pms and is_pmg:
+                label_target = "Total Target Site & Genset"
+                label_actual = "Site & Genset Terealisasi"
+                unit_text = "Site & Genset"
+            elif is_pms:
+                label_target = "Total Target Site"
+                label_actual = "Site Terealisasi"
+                unit_text = "Site"
+            elif is_pmg:
+                label_target = "Total Target Genset"
+                label_actual = "Genset Terealisasi"
+                unit_text = "Genset"
+            else:
+                # Default jika penamaan file tidak mengandung unsur site/genset/pms/pmg
+                if len(sumber_unik) > 1:
+                    label_target = "Total Target Site & Genset"
+                    label_actual = "Site & Genset Terealisasi"
+                    unit_text = "Site & Genset"
+                else:
+                    label_target = "Total Target"
+                    label_actual = "Terealisasi"
+                    unit_text = "Unit"
+
+            # --- KPI Cards Dinamis ---
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("📌 Total Target Site", f"{total_sites:,.0f} Unit")
-            col2.metric("✅ Site Terealisasi", f"{completed_sites:,.0f} Unit")
+            col1.metric(f"📌 {label_target}", f"{total_sites:,.0f} {unit_text}")
+            col2.metric(f"✅ {label_actual}", f"{completed_sites:,.0f} {unit_text}")
             col3.metric("📈 Progres Realisasi", f"{current_actual_pct:.2f}%")
             col4.metric("⚖️ Deviasi", f"{deviation:+.2f}%", delta_color="normal")
             
             st.markdown("<hr style='margin: 10px 0px 25px 0px;'>", unsafe_allow_html=True)
 
-            # --- TABEL LEADERBOARD (PENCAPAIAN PER NOP) ---
+            # --- TABEL LEADERBOARD ---
             st.markdown("### 🏆 Peringkat Pencapaian per NOP")
             
             df_leaderboard = generate_leaderboard(df_filtered, selected_completed)
             
-            # Styling Tabel Leaderboard menggunakan Pandas Styler
             def style_leaderboard(row):
                 if row['NOP'] == 'Grand Total':
                     return ['background-color: #d9e1f2; font-weight: bold; color: black; border-top: 2px solid #0f4c75;'] * len(row)
@@ -281,9 +298,8 @@ if uploaded_files:
 
             if not df_leaderboard.empty:
                 styled_df = df_leaderboard.style.apply(style_leaderboard, axis=1).format({
-                    "% Ach": "{:.0%}" # Menampilkan dalam bentuk 12%, 15%, dll
+                    "% Ach": "{:.0%}"
                 })
-                
                 st.dataframe(styled_df, use_container_width=True, hide_index=True, height=int(35.2 * (len(df_leaderboard) + 1)))
 
             st.markdown("<br>", unsafe_allow_html=True)
@@ -294,7 +310,7 @@ if uploaded_files:
             fig.add_trace(
                 go.Bar(
                     x=timeline_df['Date'], y=timeline_df['Target_Unit'],
-                    name='Target Harian (Unit)', opacity=0.3, marker_color='#cbd5e1', hoverinfo='x+y'
+                    name=f'Target Harian ({unit_text})', opacity=0.3, marker_color='#cbd5e1', hoverinfo='x+y'
                 ), secondary_y=True
             )
 
@@ -313,16 +329,24 @@ if uploaded_files:
                     fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.1)'
                 ), secondary_y=False
             )
+            
+            # Dinamis Judul Grafik
+            if len(sumber_unik) > 1:
+                title_chart = "<b>S-Curve Gabungan (Monitoring PM)</b>"
+            elif len(sumber_unik) == 1:
+                title_chart = f"<b>S-Curve {sumber_unik[0]}</b>"
+            else:
+                title_chart = "<b>S-Curve (Monitoring PM)</b>"
 
             fig.update_layout(
-                title=dict(text="<b>S-Curve Gabungan PM (Monitoring)</b>", font=dict(size=20, color='#333333')),
+                title=dict(text=title_chart, font=dict(size=20, color='#333333')),
                 hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 height=500, margin=dict(l=40, r=40, t=60, b=40), plot_bgcolor='white', paper_bgcolor='white',
             )
 
             fig.update_xaxes(title_text="", tickformat="%d %b '%y", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
             fig.update_yaxes(title_text="Progres Kumulatif (%)", range=[0, 105], showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1', secondary_y=False)
-            fig.update_yaxes(title_text="Volume (Unit)", showgrid=False, secondary_y=True)
+            fig.update_yaxes(title_text=f"Volume ({unit_text})", showgrid=False, secondary_y=True)
 
             st.plotly_chart(fig, use_container_width=True)
 
@@ -332,7 +356,7 @@ if uploaded_files:
             
             with tab1:
                 rekap_export = timeline_df[['Date', 'Target_Unit', 'Target_Kumulatif', 'Actual_Unit', 'Actual_Kumulatif', 'Deviasi']].copy()
-                rekap_export.columns = ['Tanggal', 'Target Harian (Site)', 'Target Kumulatif (%)', 'Realisasi Harian (Site)', 'Realisasi Kumulatif (%)', 'Deviasi (%)']
+                rekap_export.columns = ['Tanggal', f'Target Harian ({unit_text})', 'Target Kumulatif (%)', f'Realisasi Harian ({unit_text})', 'Realisasi Kumulatif (%)', 'Deviasi (%)']
                 st.dataframe(rekap_export.style.format({
                     'Target Kumulatif (%)': '{:.2f}%', 'Realisasi Kumulatif (%)': '{:.2f}%', 'Deviasi (%)': '{:.2f}%'
                 }), use_container_width=True)
