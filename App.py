@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS untuk Tampilan Profesional
+# Custom CSS
 st.markdown("""
     <style>
     .main-header { font-size: 28px; font-weight: 800; color: #0f4c75; margin-bottom: -10px;}
@@ -33,16 +33,27 @@ st.markdown("""
         font-weight: 600;
         color: #333333;
     }
-    .dataframe-container { margin-bottom: 30px; }
+    .report-text {
+        background-color: #e6f7ff; border-left: 4px solid #1890ff; padding: 15px; border-radius: 5px; font-size: 15px; margin-bottom: 20px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">📈 Dashboard Monitoring Kurva S & Leaderboard (SIRAPI)</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Monitoring Preventive Maintenance (PM Site & PM Genset) Terintegrasi</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Monitoring Preventive Maintenance Terpisah (PMS & PMG)</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. FUNGSI PENGOLAH DATA
+# 2. FUNGSI PENGOLAH DATA UTAMA
 # ==========================================
+def assign_tipe_pm(filename):
+    """Menentukan Tipe PM (PMS/PMG) dari nama file otomatis"""
+    f_upper = str(filename).upper()
+    if 'SITE' in f_upper or 'PMS' in f_upper:
+        return 'PMS'
+    elif 'GENSET' in f_upper or 'PMG' in f_upper:
+        return 'PMG'
+    return 'Lainnya'
+
 def calculate_scurve(df_filtered, completed_statuses):
     df_filtered = df_filtered.copy()
     
@@ -52,13 +63,13 @@ def calculate_scurve(df_filtered, completed_statuses):
     
     total_sites = len(df_filtered)
     if total_sites == 0:
-        return None, 0, 0, 0, 0
+        return None, 0, 0, 0
 
     weight_per_site = 100.0 / total_sites
-    
     min_sched = df_filtered['Schedule Date'].min()
     max_sched = df_filtered['Schedule Date'].max()
     
+    # Hanya hitung aktual/selesai dari status yang DIPILIH (multiselect)
     df_submitted = df_filtered[df_filtered['Status'].astype(str).str.upper().isin(completed_statuses)]
     completed_sites = len(df_submitted)
     
@@ -75,11 +86,13 @@ def calculate_scurve(df_filtered, completed_statuses):
     all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
     timeline_df = pd.DataFrame({'Date': all_dates})
     
+    # TARGET
     target_daily = df_filtered.groupby('Schedule Date').size().reset_index(name='Target_Unit')
     timeline_df = pd.merge(timeline_df, target_daily, left_on='Date', right_on='Schedule Date', how='left')
     timeline_df['Target_Unit'] = timeline_df['Target_Unit'].fillna(0)
     timeline_df['Target_Kumulatif'] = (timeline_df['Target_Unit'] * weight_per_site).cumsum()
     
+    # ACTUAL
     if not df_submitted.empty:
         actual_daily = df_submitted.groupby('Submitted Date').size().reset_index(name='Actual_Unit')
         timeline_df = pd.merge(timeline_df, actual_daily, left_on='Date', right_on='Submitted Date', how='left')
@@ -90,23 +103,18 @@ def calculate_scurve(df_filtered, completed_statuses):
             lambda r: r['Actual_Kumulatif'] if r['Date'] <= max_sub else np.nan, axis=1
         )
         current_actual_pct = timeline_df.loc[timeline_df['Date'] == max_sub, 'Actual_Kumulatif'].values[0] if max_sub else 0
-        current_target_pct = timeline_df.loc[timeline_df['Date'] == max_sub, 'Target_Kumulatif'].values[0] if max_sub else 0
-        deviation = current_actual_pct - current_target_pct
     else:
         timeline_df['Actual_Unit'] = 0
         timeline_df['Actual_Kumulatif'] = 0.0
         timeline_df['Actual_Kumulatif_Plot'] = np.nan
         current_actual_pct = 0.0
-        deviation = 0.0
         
-    timeline_df['Deviasi'] = timeline_df['Actual_Kumulatif'] - timeline_df['Target_Kumulatif']
-    return timeline_df, total_sites, completed_sites, current_actual_pct, deviation
+    return timeline_df, total_sites, completed_sites, current_actual_pct
 
 def generate_leaderboard(df_filtered, completed_statuses):
-    if df_filtered.empty:
-        return pd.DataFrame()
+    """Menghasilkan Dataframe untuk Leaderboard berjenjang"""
+    if df_filtered.empty: return pd.DataFrame()
 
-    # Hitung Agregat Keseluruhan per NOP (Total dari seluruh NOP)
     agg_nop = df_filtered.groupby('NOP').agg(
         Count_Site=('NOP', 'count'),
         Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin(completed_statuses).sum())
@@ -114,53 +122,52 @@ def generate_leaderboard(df_filtered, completed_statuses):
     agg_nop['% Ach'] = (agg_nop['Total_Closed'] / agg_nop['Count_Site'] * 100).fillna(0)
     agg_nop['Rank'] = agg_nop['% Ach'].rank(method='min', ascending=False).astype(int)
 
-    # Hitung Rincian
-    agg_detail = df_filtered.groupby(['NOP', 'Sumber File']).agg(
+    agg_detail = df_filtered.groupby(['NOP', 'Tipe_PM']).agg(
         Count_Site=('NOP', 'count'),
         Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin(completed_statuses).sum())
     ).reset_index()
     agg_detail['% Ach'] = (agg_detail['Total_Closed'] / agg_detail['Count_Site'] * 100).fillna(0)
 
     records = []
-    grand_site = 0
-    grand_closed = 0
+    grand_site, grand_closed = 0, 0
 
     for _, row in agg_nop.sort_values('Rank').iterrows():
         nop_name = row['NOP']
         records.append({
-            'NOP': f"⊟ {nop_name}",
-            'PM Status': 'TOTAL NOP',
-            'Count of Site': row['Count_Site'],
-            'Total Closed': row['Total_Closed'],
-            '% Ach': row['% Ach'] / 100.0,
-            'Rank': row['Rank']
+            'NOP': f"⊟ {nop_name}", 'PM Status': 'TOTAL NOP',
+            'Target': row['Count_Site'], 'Terealisasi': row['Total_Closed'],
+            '% Ach': row['% Ach'] / 100.0, 'Rank': row['Rank']
         })
         grand_site += row['Count_Site']
         grand_closed += row['Total_Closed']
 
         details = agg_detail[agg_detail['NOP'] == nop_name]
         for _, d_row in details.iterrows():
-            tipe_pm = str(d_row['Sumber File']).replace('.xlsx', '').replace('.xls', '')
             records.append({
-                'NOP': "", 
-                'PM Status': tipe_pm,
-                'Count of Site': d_row['Count_Site'],
-                'Total Closed': d_row['Total_Closed'],
-                '% Ach': d_row['% Ach'] / 100.0,
-                'Rank': ""
+                'NOP': "", 'PM Status': d_row['Tipe_PM'],
+                'Target': d_row['Count_Site'], 'Terealisasi': d_row['Total_Closed'],
+                '% Ach': d_row['% Ach'] / 100.0, 'Rank': ""
             })
 
-    grand_pct = (grand_closed / grand_site) if grand_site > 0 else 0
     records.append({
-        'NOP': 'Grand Total',
-        'PM Status': '',
-        'Count of Site': grand_site,
-        'Total Closed': grand_closed,
-        '% Ach': grand_pct,
-        'Rank': ''
+        'NOP': 'Grand Total', 'PM Status': '', 'Target': grand_site,
+        'Terealisasi': grand_closed, '% Ach': (grand_closed/grand_site if grand_site > 0 else 0), 'Rank': ''
     })
 
     return pd.DataFrame(records)
+
+def draw_scurve_chart(timeline_df, title, unit_text):
+    """Fungsi helper untuk membuat grafik Plotly (Bisa dipanggil berulang)"""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=timeline_df['Date'], y=timeline_df['Target_Unit'], name=f'Target Harian ({unit_text})', opacity=0.3, marker_color='#cbd5e1', hoverinfo='x+y'), secondary_y=True)
+    fig.add_trace(go.Scatter(x=timeline_df['Date'], y=timeline_df['Target_Kumulatif'], mode='lines', name='Plan Kumulatif (%)', line=dict(color='#0f4c75', width=3, dash='dash')), secondary_y=False)
+    fig.add_trace(go.Scatter(x=timeline_df['Date'], y=timeline_df['Actual_Kumulatif_Plot'], mode='lines+markers', name='Actual Kumulatif (%)', line=dict(color='#2ca02c', width=4), marker=dict(size=6, color='#2ca02c'), fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.1)'), secondary_y=False)
+    
+    fig.update_layout(title=dict(text=title, font=dict(size=18, color='#333333')), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), height=450, margin=dict(l=30, r=30, t=50, b=30), plot_bgcolor='white', paper_bgcolor='white')
+    fig.update_xaxes(title_text="", tickformat="%d %b", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
+    fig.update_yaxes(title_text="Progres (%)", range=[0, 105], showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1', secondary_y=False)
+    fig.update_yaxes(title_text=f"Volume", showgrid=False, secondary_y=True)
+    return fig
 
 # ==========================================
 # 3. SIDEBAR & FILE UPLOAD
@@ -168,28 +175,18 @@ def generate_leaderboard(df_filtered, completed_statuses):
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3256/3256013.png", width=60)
 st.sidebar.header("📁 Upload Data")
 
-uploaded_files = st.sidebar.file_uploader(
-    "Upload File PM Site & PM Genset (Excel)", 
-    type=["xlsx", "xls"], 
-    accept_multiple_files=True
-)
+uploaded_files = st.sidebar.file_uploader("Upload File PM Site & PM Genset (Excel)", type=["xlsx", "xls"], accept_multiple_files=True)
 
 if uploaded_files:
     try:
         df_list = []
         for file in uploaded_files:
             temp_df = pd.read_excel(file)
-            temp_df['Sumber File'] = file.name 
+            temp_df['Sumber File'] = file.name
+            temp_df['Tipe_PM'] = assign_tipe_pm(file.name) # Klasifikasi Otomatis PMS/PMG
             df_list.append(temp_df)
             
         df_raw = pd.concat(df_list, ignore_index=True)
-        
-        required_cols = ['Schedule Date', 'Submitted Date', 'Status', 'NOP']
-        missing_cols = [col for col in required_cols if col not in df_raw.columns]
-        if missing_cols:
-            st.error(f"File tidak valid. Kurang kolom berikut: {missing_cols}")
-            st.stop()
-
         all_unique_statuses = sorted(df_raw['Status'].dropna().astype(str).str.upper().unique().tolist())
 
         # ==========================================
@@ -203,172 +200,134 @@ if uploaded_files:
             default_completed = [all_unique_statuses[0]]
             
         selected_completed = st.sidebar.multiselect(
-            "1. Status Dihitung Selesai (Actual):",
+            "1. Status Dihitung Selesai:",
             options=all_unique_statuses,
-            default=default_completed
+            default=default_completed,
+            help="Status di luar ini akan DIABAIKAN dari hitungan Terealisasi (Selesai)."
         )
         
         include_waiting = st.sidebar.checkbox("2. Hitung 'Waiting Approval' sbg Target", value=True)
 
         st.sidebar.markdown("---")
         st.sidebar.header("🎯 Filter Area & Tipe")
-        
-        list_sumber = sorted(df_raw['Sumber File'].unique().tolist())
-        selected_sumber = st.sidebar.multiselect("Tipe PM (Sumber File):", list_sumber, default=list_sumber)
-
         list_nop = sorted([str(x) for x in df_raw['NOP'].dropna().unique()])
         selected_nop = st.sidebar.multiselect("Pilih NOP:", list_nop, default=list_nop)
-        
-        if 'Cluster' in df_raw.columns:
-            list_cluster = ["Semua Cluster"] + sorted([str(x) for x in df_raw['Cluster'].dropna().unique()])
-            selected_cluster = st.sidebar.selectbox("Pilih Cluster:", list_cluster)
-        else:
-            selected_cluster = "Semua Cluster"
 
         # --- PROSES FILTERING ---
         df_filtered = df_raw.copy()
+        if selected_nop: df_filtered = df_filtered[df_filtered['NOP'].isin(selected_nop)]
+        if not include_waiting: df_filtered = df_filtered[~df_filtered['Status'].astype(str).str.upper().str.contains('WAITING APPROVAL')]
+
+        # Hitung Nilai Aktual Terhadap Status Pilihan
+        df_filtered['Is_Selesai'] = df_filtered['Status'].astype(str).str.upper().isin(selected_completed)
+
+        # ==========================================
+        # 5. GENERATE REPORT TEXT (AUTO HIGHLIGHT)
+        # ==========================================
+        df_sub_only = df_filtered[df_filtered['Is_Selesai']].copy()
+        if not df_sub_only.empty:
+            df_sub_only['Submitted Date'] = pd.to_datetime(df_sub_only['Submitted Date'], errors='coerce')
+            max_date = df_sub_only['Submitted Date'].max()
+            if pd.notnull(max_date):
+                df_last = df_sub_only[df_sub_only['Submitted Date'] == max_date]
+                count_pms = len(df_last[df_last['Tipe_PM'] == 'PMS'])
+                count_pmg = len(df_last[df_last['Tipe_PM'] == 'PMG'])
+                total_last = count_pms + count_pmg
+                
+                date_str = max_date.strftime('%d %B %Y')
+                report_text = f"📢 **Daily Highlight:** Berdasarkan update terakhir per tanggal **{date_str}**, terdapat penambahan realisasi sebanyak **{total_last} Unit**, dengan rincian **{count_pms} PMS** dan **{count_pmg} PMG** yang disubmit."
+                st.markdown(f'<div class="report-text">{report_text}</div>', unsafe_allow_html=True)
+
+        # ==========================================
+        # 6. PEMISAHAN TARGET (KPI CARDS)
+        # ==========================================
+        tgt_pms = len(df_filtered[df_filtered['Tipe_PM'] == 'PMS'])
+        tgt_pmg = len(df_filtered[df_filtered['Tipe_PM'] == 'PMG'])
+        tgt_total = tgt_pms + tgt_pmg
         
-        if selected_sumber:
-            df_filtered = df_filtered[df_filtered['Sumber File'].isin(selected_sumber)]
-            
-        if selected_nop:
-            df_filtered = df_filtered[df_filtered['NOP'].isin(selected_nop)]
-            
-        if selected_cluster != "Semua Cluster":
-            df_filtered = df_filtered[df_filtered['Cluster'] == selected_cluster]
-            
-        if not include_waiting:
-            df_filtered = df_filtered[~df_filtered['Status'].astype(str).str.upper().str.contains('WAITING APPROVAL')]
+        act_pms = len(df_filtered[(df_filtered['Tipe_PM'] == 'PMS') & (df_filtered['Is_Selesai'])])
+        act_pmg = len(df_filtered[(df_filtered['Tipe_PM'] == 'PMG') & (df_filtered['Is_Selesai'])])
+        act_total = act_pms + act_pmg
+        
+        pct_total = (act_total / tgt_total * 100) if tgt_total > 0 else 0
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🎯 Total Target Pekerjaan", f"{tgt_total} Unit", f"PMS: {tgt_pms} Site | PMG: {tgt_pmg} Genset", delta_color="off")
+        col2.metric("✅ Total Terealisasi", f"{act_total} Unit", f"PMS: {act_pms} Site | PMG: {act_pmg} Genset", delta_color="off")
+        col3.metric("📈 Progres Keseluruhan", f"{pct_total:.2f}%")
+
+        st.markdown("<hr style='margin: 15px 0px 25px 0px;'>", unsafe_allow_html=True)
 
         # ==========================================
-        # 5. PERHITUNGAN & TAMPILAN DASHBOARD
+        # 7. SPLIT GRAFIK PMS & PMG BERDAMPINGAN
         # ==========================================
-        timeline_df, total_sites, completed_sites, current_actual_pct, deviation = calculate_scurve(df_filtered, selected_completed)
+        st.markdown("### 📊 Tren Kurva S (PMS vs PMG)")
+        
+        df_pms = df_filtered[df_filtered['Tipe_PM'] == 'PMS']
+        df_pmg = df_filtered[df_filtered['Tipe_PM'] == 'PMG']
 
-        if timeline_df is not None:
-            # --- LOGIKA PENAMAAN DINAMIS (SITE / GENSET / GABUNGAN) ---
-            sumber_unik = df_filtered['Sumber File'].astype(str).str.upper().unique()
-            is_pms = any('SITE' in s or 'PMS' in s for s in sumber_unik)
-            is_pmg = any('GENSET' in s or 'PMG' in s for s in sumber_unik)
-            
-            if is_pms and is_pmg:
-                label_target = "Total Target Site & Genset"
-                label_actual = "Site & Genset Terealisasi"
-                unit_text = "Site & Genset"
-            elif is_pms:
-                label_target = "Total Target Site"
-                label_actual = "Site Terealisasi"
-                unit_text = "Site"
-            elif is_pmg:
-                label_target = "Total Target Genset"
-                label_actual = "Genset Terealisasi"
-                unit_text = "Genset"
+        col_chart1, col_chart2 = st.columns(2)
+        
+        with col_chart1:
+            if not df_pms.empty:
+                tl_pms, _, _, _ = calculate_scurve(df_pms, selected_completed)
+                st.plotly_chart(draw_scurve_chart(tl_pms, "S-Curve PM Site (PMS)", "Site"), use_container_width=True)
             else:
-                # Default jika penamaan file tidak mengandung unsur site/genset/pms/pmg
-                if len(sumber_unik) > 1:
-                    label_target = "Total Target Site & Genset"
-                    label_actual = "Site & Genset Terealisasi"
-                    unit_text = "Site & Genset"
-                else:
-                    label_target = "Total Target"
-                    label_actual = "Terealisasi"
-                    unit_text = "Unit"
+                st.info("⚠️ Data PMS tidak tersedia pada filter saat ini.")
 
-            # --- KPI Cards Dinamis ---
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric(f"📌 {label_target}", f"{total_sites:,.0f} {unit_text}")
-            col2.metric(f"✅ {label_actual}", f"{completed_sites:,.0f} {unit_text}")
-            col3.metric("📈 Progres Realisasi", f"{current_actual_pct:.2f}%")
-            col4.metric("⚖️ Deviasi", f"{deviation:+.2f}%", delta_color="normal")
-            
-            st.markdown("<hr style='margin: 10px 0px 25px 0px;'>", unsafe_allow_html=True)
-
-            # --- TABEL LEADERBOARD ---
-            st.markdown("### 🏆 Peringkat Pencapaian per NOP")
-            
-            df_leaderboard = generate_leaderboard(df_filtered, selected_completed)
-            
-            def style_leaderboard(row):
-                if row['NOP'] == 'Grand Total':
-                    return ['background-color: #d9e1f2; font-weight: bold; color: black; border-top: 2px solid #0f4c75;'] * len(row)
-                elif row['PM Status'] == 'TOTAL NOP':
-                    return ['background-color: #f8f9fa; font-weight: bold; color: #0f4c75; border-top: 1px solid #dee2e6;'] * len(row)
-                else:
-                    return ['background-color: #ffffff; color: #495057;'] * len(row)
-
-            if not df_leaderboard.empty:
-                styled_df = df_leaderboard.style.apply(style_leaderboard, axis=1).format({
-                    "% Ach": "{:.0%}"
-                })
-                st.dataframe(styled_df, use_container_width=True, hide_index=True, height=int(35.2 * (len(df_leaderboard) + 1)))
-
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # --- GRAFIK KURVA S ---
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-            fig.add_trace(
-                go.Bar(
-                    x=timeline_df['Date'], y=timeline_df['Target_Unit'],
-                    name=f'Target Harian ({unit_text})', opacity=0.3, marker_color='#cbd5e1', hoverinfo='x+y'
-                ), secondary_y=True
-            )
-
-            fig.add_trace(
-                go.Scatter(
-                    x=timeline_df['Date'], y=timeline_df['Target_Kumulatif'],
-                    mode='lines', name='Plan Kumulatif (%)', line=dict(color='#0f4c75', width=3, dash='dash'),
-                ), secondary_y=False
-            )
-
-            fig.add_trace(
-                go.Scatter(
-                    x=timeline_df['Date'], y=timeline_df['Actual_Kumulatif_Plot'],
-                    mode='lines+markers', name='Actual Kumulatif (%)',
-                    line=dict(color='#2ca02c', width=4), marker=dict(size=6, color='#2ca02c'),
-                    fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.1)'
-                ), secondary_y=False
-            )
-            
-            # Dinamis Judul Grafik
-            if len(sumber_unik) > 1:
-                title_chart = "<b>S-Curve Gabungan (Monitoring PM)</b>"
-            elif len(sumber_unik) == 1:
-                title_chart = f"<b>S-Curve {sumber_unik[0]}</b>"
+        with col_chart2:
+            if not df_pmg.empty:
+                tl_pmg, _, _, _ = calculate_scurve(df_pmg, selected_completed)
+                st.plotly_chart(draw_scurve_chart(tl_pmg, "S-Curve PM Genset (PMG)", "Genset"), use_container_width=True)
             else:
-                title_chart = "<b>S-Curve (Monitoring PM)</b>"
+                st.info("⚠️ Data PMG tidak tersedia pada filter saat ini.")
 
-            fig.update_layout(
-                title=dict(text=title_chart, font=dict(size=20, color='#333333')),
-                hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                height=500, margin=dict(l=40, r=40, t=60, b=40), plot_bgcolor='white', paper_bgcolor='white',
-            )
+        st.markdown("<br>", unsafe_allow_html=True)
 
-            fig.update_xaxes(title_text="", tickformat="%d %b '%y", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
-            fig.update_yaxes(title_text="Progres Kumulatif (%)", range=[0, 105], showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1', secondary_y=False)
-            fig.update_yaxes(title_text=f"Volume ({unit_text})", showgrid=False, secondary_y=True)
-
-            st.plotly_chart(fig, use_container_width=True)
-
-            # --- TABEL RAW DATA ---
-            st.markdown("### 📋 Detail Data Ticket PM")
-            tab1, tab2 = st.tabs(["📊 Tabel Rekap Harian (Kurva S)", "🗃️ Raw Data Ticket Terfilter"])
+        # ==========================================
+        # 8. TABEL DAILY SUBMITTED (BERJENJANG TANGGAL)
+        # ==========================================
+        st.markdown("### 📅 Rekap Daily Submitted Berjenjang")
+        if not df_sub_only.empty:
+            # Membuat Pivot Table harian
+            df_daily = df_sub_only.groupby(['Submitted Date', 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
+            # Pastikan kolom PMS dan PMG selalu ada meski bernilai 0
+            if 'PMS' not in df_daily.columns: df_daily['PMS'] = 0
+            if 'PMG' not in df_daily.columns: df_daily['PMG'] = 0
             
-            with tab1:
-                rekap_export = timeline_df[['Date', 'Target_Unit', 'Target_Kumulatif', 'Actual_Unit', 'Actual_Kumulatif', 'Deviasi']].copy()
-                rekap_export.columns = ['Tanggal', f'Target Harian ({unit_text})', 'Target Kumulatif (%)', f'Realisasi Harian ({unit_text})', 'Realisasi Kumulatif (%)', 'Deviasi (%)']
-                st.dataframe(rekap_export.style.format({
-                    'Target Kumulatif (%)': '{:.2f}%', 'Realisasi Kumulatif (%)': '{:.2f}%', 'Deviasi (%)': '{:.2f}%'
-                }), use_container_width=True)
+            df_daily['Total Disubmit'] = df_daily['PMS'] + df_daily['PMG']
+            df_daily = df_daily.sort_values('Submitted Date', ascending=False)
+            df_daily['Submitted Date'] = df_daily['Submitted Date'].dt.strftime('%d %B %Y')
+            df_daily.columns = ['Tanggal Submit', 'Selesai PMG (Genset)', 'Selesai PMS (Site)', 'Total Disubmit Hari Itu']
             
-            with tab2:
-                st.dataframe(df_filtered, use_container_width=True)
-
+            # Reorder Kolom
+            df_daily = df_daily[['Tanggal Submit', 'Selesai PMS (Site)', 'Selesai PMG (Genset)', 'Total Disubmit Hari Itu']]
+            st.dataframe(df_daily, use_container_width=True, hide_index=True)
         else:
-            st.warning("⚠️ Data tidak ditemukan. Silakan cek kembali filter NOP, Status, atau Rentang Tanggal.")
+            st.warning("Belum ada data dengan status terealisasi (selesai).")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ==========================================
+        # 9. LEADERBOARD & DETAIL DATA
+        # ==========================================
+        st.markdown("### 🏆 Peringkat Pencapaian per NOP")
+        df_leaderboard = generate_leaderboard(df_filtered, selected_completed)
+        
+        def style_leaderboard(row):
+            if row['NOP'] == 'Grand Total':
+                return ['background-color: #d9e1f2; font-weight: bold; color: black; border-top: 2px solid #0f4c75;'] * len(row)
+            elif row['PM Status'] == 'TOTAL NOP':
+                return ['background-color: #f8f9fa; font-weight: bold; color: #0f4c75; border-top: 1px solid #dee2e6;'] * len(row)
+            else:
+                return ['background-color: #ffffff; color: #495057;'] * len(row)
+
+        if not df_leaderboard.empty:
+            styled_df = df_leaderboard.style.apply(style_leaderboard, axis=1).format({"% Ach": "{:.0%}"})
+            st.dataframe(styled_df, use_container_width=True, hide_index=True, height=int(35.2 * (len(df_leaderboard) + 1)))
 
     except Exception as e:
         st.error(f"❌ Terjadi kesalahan saat memproses file: {e}")
 
 else:
-    st.info("👈 Silakan upload file Excel PM Site dan/atau PM Genset Anda pada sidebar sebelah kiri untuk memulai.")
+    st.info("👈 Silakan upload file Excel PM Site dan PM Genset Anda pada sidebar sebelah kiri untuk memulai.")
