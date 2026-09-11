@@ -46,7 +46,6 @@ st.markdown('<div class="sub-header">Monitoring Preventive Maintenance Terpisah 
 # 2. FUNGSI PENGOLAH DATA UTAMA
 # ==========================================
 def assign_tipe_pm(filename):
-    """Menentukan Tipe PM (PMS/PMG) dari nama file otomatis"""
     f_upper = str(filename).upper()
     if 'SITE' in f_upper or 'PMS' in f_upper:
         return 'PMS'
@@ -69,8 +68,8 @@ def calculate_scurve(df_filtered, completed_statuses):
     min_sched = df_filtered['Schedule Date'].min()
     max_sched = df_filtered['Schedule Date'].max()
     
-    # Hanya hitung aktual/selesai dari status yang DIPILIH (multiselect)
-    df_submitted = df_filtered[df_filtered['Status'].astype(str).str.upper().isin(completed_statuses)]
+    # Hanya hitung aktual/selesai dari status yang DIPILIH (multiselect Selesai)
+    df_submitted = df_filtered[df_filtered['Status'].astype(str).str.upper().isin([s.upper() for s in completed_statuses])]
     completed_sites = len(df_submitted)
     
     if not df_submitted.empty:
@@ -112,19 +111,18 @@ def calculate_scurve(df_filtered, completed_statuses):
     return timeline_df, total_sites, completed_sites, current_actual_pct
 
 def generate_leaderboard(df_filtered, completed_statuses):
-    """Menghasilkan Dataframe untuk Leaderboard berjenjang"""
     if df_filtered.empty: return pd.DataFrame()
 
     agg_nop = df_filtered.groupby('NOP').agg(
         Count_Site=('NOP', 'count'),
-        Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin(completed_statuses).sum())
+        Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin([s.upper() for s in completed_statuses]).sum())
     ).reset_index()
     agg_nop['% Ach'] = (agg_nop['Total_Closed'] / agg_nop['Count_Site'] * 100).fillna(0)
     agg_nop['Rank'] = agg_nop['% Ach'].rank(method='min', ascending=False).astype(int)
 
     agg_detail = df_filtered.groupby(['NOP', 'Tipe_PM']).agg(
         Count_Site=('NOP', 'count'),
-        Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin(completed_statuses).sum())
+        Total_Closed=('Status', lambda x: x.astype(str).str.upper().isin([s.upper() for s in completed_statuses]).sum())
     ).reset_index()
     agg_detail['% Ach'] = (agg_detail['Total_Closed'] / agg_detail['Count_Site'] * 100).fillna(0)
 
@@ -157,7 +155,6 @@ def generate_leaderboard(df_filtered, completed_statuses):
     return pd.DataFrame(records)
 
 def draw_scurve_chart(timeline_df, title, unit_text):
-    """Fungsi helper untuk membuat grafik Plotly (Bisa dipanggil berulang)"""
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=timeline_df['Date'], y=timeline_df['Target_Unit'], name=f'Target Harian ({unit_text})', opacity=0.3, marker_color='#cbd5e1', hoverinfo='x+y'), secondary_y=True)
     fig.add_trace(go.Scatter(x=timeline_df['Date'], y=timeline_df['Target_Kumulatif'], mode='lines', name='Plan Kumulatif (%)', line=dict(color='#0f4c75', width=3, dash='dash')), secondary_y=False)
@@ -183,43 +180,57 @@ if uploaded_files:
         for file in uploaded_files:
             temp_df = pd.read_excel(file)
             temp_df['Sumber File'] = file.name
-            temp_df['Tipe_PM'] = assign_tipe_pm(file.name) # Klasifikasi Otomatis PMS/PMG
+            temp_df['Tipe_PM'] = assign_tipe_pm(file.name)
             df_list.append(temp_df)
             
         df_raw = pd.concat(df_list, ignore_index=True)
         all_unique_statuses = sorted(df_raw['Status'].dropna().astype(str).str.upper().unique().tolist())
 
         # ==========================================
-        # 4. FILTER PARAMETER
+        # 4. FILTER PENGATURAN LOGIKA KURVA (MURNI MULTISELECT)
         # ==========================================
         st.sidebar.markdown("---")
         st.sidebar.header("🔍 Pengaturan Logika Kurva")
         
-        default_completed = [s for s in ['SUBMITTED', 'CLOSED', 'DONE', 'APPROVED'] if s in all_unique_statuses]
+        # Multiselect 1: Status Selesai (Realisasi)
+        default_completed = [s for s in ['SUBMITTED', 'CLOSED', 'DONE', 'APPROVED', 'WAITING AMNESTY'] if s in all_unique_statuses]
         if not default_completed and all_unique_statuses:
             default_completed = [all_unique_statuses[0]]
             
         selected_completed = st.sidebar.multiselect(
-            "1. Status Dihitung Selesai:",
+            "1. Status Dihitung Selesai (Realisasi):",
             options=all_unique_statuses,
             default=default_completed,
-            help="Status di luar ini akan DIABAIKAN dari hitungan Terealisasi (Selesai)."
+            help="Menjadi pembentuk Kurva S Aktual/Realisasi."
         )
         
-        include_waiting = st.sidebar.checkbox("2. Hitung 'Waiting Approval' sbg Target", value=True)
+        # Multiselect 2: Status Takeout (Diabaikan)
+        default_takeout = [s for s in all_unique_statuses if 'TAKEOUT' in s or 'WAITING APPROVAL' in s]
+        selected_takeout = st.sidebar.multiselect(
+            "2. Status Diabaikan (Takeout dari Target):",
+            options=all_unique_statuses,
+            default=default_takeout,
+            help="Status yang dipilih di sini TIDAK AKAN DIHITUNG sama sekali ke dalam total target."
+        )
 
         st.sidebar.markdown("---")
         st.sidebar.header("🎯 Filter Area & Tipe")
         list_nop = sorted([str(x) for x in df_raw['NOP'].dropna().unique()])
         selected_nop = st.sidebar.multiselect("Pilih NOP:", list_nop, default=list_nop)
 
-        # --- PROSES FILTERING ---
+        # --- PROSES FILTERING UTAMA ---
         df_filtered = df_raw.copy()
-        if selected_nop: df_filtered = df_filtered[df_filtered['NOP'].isin(selected_nop)]
-        if not include_waiting: df_filtered = df_filtered[~df_filtered['Status'].astype(str).str.upper().str.contains('WAITING APPROVAL')]
+        
+        # Filter berdasarkan NOP
+        if selected_nop: 
+            df_filtered = df_filtered[df_filtered['NOP'].isin(selected_nop)]
+        
+        # Buang data yang masuk dalam kategori "Diabaikan (Takeout)"
+        if selected_takeout:
+            df_filtered = df_filtered[~df_filtered['Status'].astype(str).str.upper().isin([s.upper() for s in selected_takeout])]
 
         # Hitung Nilai Aktual Terhadap Status Pilihan
-        df_filtered['Is_Selesai'] = df_filtered['Status'].astype(str).str.upper().isin(selected_completed)
+        df_filtered['Is_Selesai'] = df_filtered['Status'].astype(str).str.upper().isin([s.upper() for s in selected_completed])
 
         # ==========================================
         # 5. GENERATE REPORT TEXT (AUTO HIGHLIGHT)
@@ -289,9 +300,7 @@ if uploaded_files:
         # ==========================================
         st.markdown("### 📅 Rekap Daily Submitted Berjenjang")
         if not df_sub_only.empty:
-            # Membuat Pivot Table harian
             df_daily = df_sub_only.groupby(['Submitted Date', 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
-            # Pastikan kolom PMS dan PMG selalu ada meski bernilai 0
             if 'PMS' not in df_daily.columns: df_daily['PMS'] = 0
             if 'PMG' not in df_daily.columns: df_daily['PMG'] = 0
             
@@ -300,7 +309,6 @@ if uploaded_files:
             df_daily['Submitted Date'] = df_daily['Submitted Date'].dt.strftime('%d %B %Y')
             df_daily.columns = ['Tanggal Submit', 'Selesai PMG (Genset)', 'Selesai PMS (Site)', 'Total Disubmit Hari Itu']
             
-            # Reorder Kolom
             df_daily = df_daily[['Tanggal Submit', 'Selesai PMS (Site)', 'Selesai PMG (Genset)', 'Total Disubmit Hari Itu']]
             st.dataframe(df_daily, use_container_width=True, hide_index=True)
         else:
