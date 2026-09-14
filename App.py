@@ -36,7 +36,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">📈 Dashboard Monitoring Kurva S & Leaderboard (SIRAPI)</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📈 Dashboard Monitoring Kurva S & Leaderboard (SiPM)</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Monitoring Preventive Maintenance Terpisah (PMS & PMG)</div>', unsafe_allow_html=True)
 
 # ==========================================
@@ -150,10 +150,41 @@ def generate_leaderboard(df_filtered, completed_statuses):
 
 def draw_scurve_chart(timeline_df, title, unit_text):
     fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
     fig.add_trace(go.Bar(x=timeline_df['Date'], y=timeline_df['Target_Unit'], name=f'Target Harian ({unit_text})', opacity=0.3, marker_color='#cbd5e1', hoverinfo='x+y'), secondary_y=True)
     fig.add_trace(go.Scatter(x=timeline_df['Date'], y=timeline_df['Target_Kumulatif'], mode='lines', name='Plan Kumulatif (%)', line=dict(color='#0f4c75', width=3, dash='dash')), secondary_y=False)
     fig.add_trace(go.Scatter(x=timeline_df['Date'], y=timeline_df['Actual_Kumulatif_Plot'], mode='lines+markers', name='Actual Kumulatif (%)', line=dict(color='#2ca02c', width=4), marker=dict(size=6, color='#2ca02c'), fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.1)'), secondary_y=False)
     
+    # ---------------------------------------------------------
+    # FITUR BARU: LABEL ANGKA OTOMATIS TANPA KLIK
+    # ---------------------------------------------------------
+    last_actual_idx = timeline_df['Actual_Kumulatif_Plot'].last_valid_index()
+    if last_actual_idx is not None:
+        last_x = timeline_df.loc[last_actual_idx, 'Date']
+        last_y = timeline_df.loc[last_actual_idx, 'Actual_Kumulatif_Plot']
+        fig.add_annotation(
+            x=last_x, y=last_y,
+            text=f"<b>{last_y:.1f}%</b>",
+            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, arrowcolor="#2ca02c",
+            ax=-40, ay=-30,
+            font=dict(color="white", size=12),
+            bgcolor="#2ca02c", bordercolor="#2ca02c", borderwidth=1, borderpad=4
+        )
+        
+    last_tgt_idx = timeline_df['Target_Kumulatif'].last_valid_index()
+    if last_tgt_idx is not None:
+        last_x_tgt = timeline_df.loc[last_tgt_idx, 'Date']
+        last_y_tgt = timeline_df.loc[last_tgt_idx, 'Target_Kumulatif']
+        fig.add_annotation(
+            x=last_x_tgt, y=last_y_tgt,
+            text=f"<b>{last_y_tgt:.1f}%</b>",
+            showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, arrowcolor="#0f4c75",
+            ax=-40, ay=30,
+            font=dict(color="white", size=12),
+            bgcolor="#0f4c75", bordercolor="#0f4c75", borderwidth=1, borderpad=4
+        )
+    # ---------------------------------------------------------
+
     fig.update_layout(title=dict(text=title, font=dict(size=18, color='#333333')), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), height=450, margin=dict(l=30, r=30, t=50, b=30), plot_bgcolor='white', paper_bgcolor='white')
     fig.update_xaxes(title_text="", tickformat="%d %b", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
     fig.update_yaxes(title_text="Progres (%)", range=[0, 105], showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1', secondary_y=False)
@@ -263,7 +294,7 @@ if uploaded_files:
                 
                 date_str = selected_date.strftime('%d %B %Y')
                 
-                wa_report = f"""📊 *UPDATE PROGRESS PM HARIAN (SIRAPI)* 📊
+                wa_report = f"""📊 *UPDATE PROGRESS PM HARIAN (SiPM)* 📊
 🗓️ Tanggal Update: {date_str}
 
 Berdasarkan data terbaru, rekap penambahan realisasi PM yang berhasil disubmit pada tanggal tersebut:
@@ -312,7 +343,49 @@ Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai 
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ==========================================
-        # 8. LEADERBOARD (Dipindah ke atas Tabel Daily)
+        # 8. FITUR BARU: GRAFIK TREN DAILY (BAR CHART)
+        # ==========================================
+        st.markdown("### 📈 Grafik Tren Daily Realisasi (Selesai)")
+        if not df_sub_only.empty:
+            # Grouping by Tanggal dan Tipe PM
+            df_daily_chart = df_sub_only.groupby([df_sub_only['Submitted Date'].dt.date, 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
+            
+            if 'PMS' not in df_daily_chart.columns: df_daily_chart['PMS'] = 0
+            if 'PMG' not in df_daily_chart.columns: df_daily_chart['PMG'] = 0
+            
+            # Membuat Bar Chart Bersandingan (Grouped Bar Chart)
+            fig_daily = go.Figure()
+            fig_daily.add_trace(go.Bar(
+                x=df_daily_chart['Submitted Date'], y=df_daily_chart['PMS'], 
+                name='PMS (Site)', marker_color='#1f77b4', 
+                text=df_daily_chart['PMS'], textposition='auto'
+            ))
+            fig_daily.add_trace(go.Bar(
+                x=df_daily_chart['Submitted Date'], y=df_daily_chart['PMG'], 
+                name='PMG (Genset)', marker_color='#ff7f0e', 
+                text=df_daily_chart['PMG'], textposition='auto'
+            ))
+            
+            fig_daily.update_layout(
+                title=dict(text="<b>Volume Realisasi Harian (PMS vs PMG)</b>", font=dict(size=18, color='#333333')),
+                barmode='group',
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                height=400,
+                margin=dict(l=30, r=30, t=50, b=30),
+                plot_bgcolor='white', paper_bgcolor='white'
+            )
+            fig_daily.update_xaxes(title_text="Tanggal Submit", tickformat="%d %b %Y", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
+            fig_daily.update_yaxes(title_text="Volume (Unit)", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
+            
+            st.plotly_chart(fig_daily, use_container_width=True)
+        else:
+            st.warning("Belum ada data realisasi harian untuk ditampilkan.")
+
+        st.markdown("<hr style='margin: 15px 0px 25px 0px;'>", unsafe_allow_html=True)
+
+        # ==========================================
+        # 9. LEADERBOARD
         # ==========================================
         st.markdown("### 🏆 Peringkat Pencapaian per NOP")
         df_leaderboard = generate_leaderboard(df_filtered, selected_completed)
@@ -332,11 +405,10 @@ Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai 
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ==========================================
-        # 9. TABEL DAILY SUBMITTED (Dirinci dengan NOP)
+        # 10. TABEL DAILY SUBMITTED (Dirinci dengan NOP)
         # ==========================================
         st.markdown("### 📅 Rekap Daily Submitted Berjenjang per NOP")
         if not df_sub_only.empty:
-            # Group by Tanggal dan NOP
             df_daily = df_sub_only.groupby(['Submitted Date', 'NOP', 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
             
             if 'PMS' not in df_daily.columns: df_daily['PMS'] = 0
@@ -356,7 +428,7 @@ Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai 
         st.markdown("<hr style='margin: 15px 0px 25px 0px;'>", unsafe_allow_html=True)
 
         # ==========================================
-        # 10. DETAIL RAW DATA (DENGAN TAB PENDING PMS/PMG)
+        # 11. DETAIL RAW DATA (DENGAN TAB PENDING PMS/PMG)
         # ==========================================
         st.markdown("### 📋 Detail Data Ticket (Monitor Sisa / Pending Pekerjaan)")
         
@@ -370,13 +442,11 @@ Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai 
             st.dataframe(df_filtered, use_container_width=True)
             
         with tab_pending_pms:
-            # Filter hanya Tipe PMS & Statusnya Belum Selesai (Is_Selesai == False)
             df_pending_pms = df_filtered[(df_filtered['Tipe_PM'] == 'PMS') & (~df_filtered['Is_Selesai'])]
             st.caption(f"Menampilkan total {len(df_pending_pms)} site PMS yang masih pending (belum mencapai status Selesai yang dipilih).")
             st.dataframe(df_pending_pms, use_container_width=True)
             
         with tab_pending_pmg:
-            # Filter hanya Tipe PMG & Statusnya Belum Selesai (Is_Selesai == False)
             df_pending_pmg = df_filtered[(df_filtered['Tipe_PM'] == 'PMG') & (~df_filtered['Is_Selesai'])]
             st.caption(f"Menampilkan total {len(df_pending_pmg)} genset PMG yang masih pending (belum mencapai status Selesai yang dipilih).")
             st.dataframe(df_pending_pmg, use_container_width=True)
