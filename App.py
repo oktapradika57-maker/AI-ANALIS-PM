@@ -33,9 +33,6 @@ st.markdown("""
         font-weight: 600;
         color: #333333;
     }
-    .report-text {
-        background-color: #e6f7ff; border-left: 4px solid #1890ff; padding: 15px; border-radius: 5px; font-size: 15px; margin-bottom: 20px;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -68,7 +65,6 @@ def calculate_scurve(df_filtered, completed_statuses):
     min_sched = df_filtered['Schedule Date'].min()
     max_sched = df_filtered['Schedule Date'].max()
     
-    # Hanya hitung aktual/selesai dari status yang DIPILIH (multiselect Selesai)
     df_submitted = df_filtered[df_filtered['Status'].astype(str).str.upper().isin([s.upper() for s in completed_statuses])]
     completed_sites = len(df_submitted)
     
@@ -85,13 +81,11 @@ def calculate_scurve(df_filtered, completed_statuses):
     all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
     timeline_df = pd.DataFrame({'Date': all_dates})
     
-    # TARGET
     target_daily = df_filtered.groupby('Schedule Date').size().reset_index(name='Target_Unit')
     timeline_df = pd.merge(timeline_df, target_daily, left_on='Date', right_on='Schedule Date', how='left')
     timeline_df['Target_Unit'] = timeline_df['Target_Unit'].fillna(0)
     timeline_df['Target_Kumulatif'] = (timeline_df['Target_Unit'] * weight_per_site).cumsum()
     
-    # ACTUAL
     if not df_submitted.empty:
         actual_daily = df_submitted.groupby('Submitted Date').size().reset_index(name='Actual_Unit')
         timeline_df = pd.merge(timeline_df, actual_daily, left_on='Date', right_on='Submitted Date', how='left')
@@ -187,12 +181,11 @@ if uploaded_files:
         all_unique_statuses = sorted(df_raw['Status'].dropna().astype(str).str.upper().unique().tolist())
 
         # ==========================================
-        # 4. FILTER PENGATURAN LOGIKA KURVA (MURNI MULTISELECT)
+        # 4. FILTER PENGATURAN LOGIKA KURVA
         # ==========================================
         st.sidebar.markdown("---")
         st.sidebar.header("🔍 Pengaturan Logika Kurva")
         
-        # Multiselect 1: Status Selesai (Realisasi)
         default_completed = [s for s in ['SUBMITTED', 'CLOSED', 'DONE', 'APPROVED', 'WAITING AMNESTY'] if s in all_unique_statuses]
         if not default_completed and all_unique_statuses:
             default_completed = [all_unique_statuses[0]]
@@ -204,7 +197,6 @@ if uploaded_files:
             help="Menjadi pembentuk Kurva S Aktual/Realisasi."
         )
         
-        # Multiselect 2: Status Takeout (Diabaikan)
         default_takeout = [s for s in all_unique_statuses if 'TAKEOUT' in s or 'WAITING APPROVAL' in s]
         selected_takeout = st.sidebar.multiselect(
             "2. Status Diabaikan (Takeout dari Target):",
@@ -214,43 +206,21 @@ if uploaded_files:
         )
 
         st.sidebar.markdown("---")
-        st.sidebar.header("🎯 Filter Area & Tipe")
+        st.sidebar.header("🎯 Filter Area")
         list_nop = sorted([str(x) for x in df_raw['NOP'].dropna().unique()])
         selected_nop = st.sidebar.multiselect("Pilih NOP:", list_nop, default=list_nop)
 
         # --- PROSES FILTERING UTAMA ---
         df_filtered = df_raw.copy()
-        
-        # Filter berdasarkan NOP
         if selected_nop: 
             df_filtered = df_filtered[df_filtered['NOP'].isin(selected_nop)]
-        
-        # Buang data yang masuk dalam kategori "Diabaikan (Takeout)"
         if selected_takeout:
             df_filtered = df_filtered[~df_filtered['Status'].astype(str).str.upper().isin([s.upper() for s in selected_takeout])]
 
-        # Hitung Nilai Aktual Terhadap Status Pilihan
         df_filtered['Is_Selesai'] = df_filtered['Status'].astype(str).str.upper().isin([s.upper() for s in selected_completed])
 
         # ==========================================
-        # 5. GENERATE REPORT TEXT (AUTO HIGHLIGHT)
-        # ==========================================
-        df_sub_only = df_filtered[df_filtered['Is_Selesai']].copy()
-        if not df_sub_only.empty:
-            df_sub_only['Submitted Date'] = pd.to_datetime(df_sub_only['Submitted Date'], errors='coerce')
-            max_date = df_sub_only['Submitted Date'].max()
-            if pd.notnull(max_date):
-                df_last = df_sub_only[df_sub_only['Submitted Date'] == max_date]
-                count_pms = len(df_last[df_last['Tipe_PM'] == 'PMS'])
-                count_pmg = len(df_last[df_last['Tipe_PM'] == 'PMG'])
-                total_last = count_pms + count_pmg
-                
-                date_str = max_date.strftime('%d %B %Y')
-                report_text = f"📢 **Daily Highlight:** Berdasarkan update terakhir per tanggal **{date_str}**, terdapat penambahan realisasi sebanyak **{total_last} Unit**, dengan rincian **{count_pms} PMS** dan **{count_pmg} PMG** yang disubmit."
-                st.markdown(f'<div class="report-text">{report_text}</div>', unsafe_allow_html=True)
-
-        # ==========================================
-        # 6. PEMISAHAN TARGET (KPI CARDS)
+        # 5. KPI CARDS & PERHITUNGAN PERSENTASE KUMULATIF
         # ==========================================
         tgt_pms = len(df_filtered[df_filtered['Tipe_PM'] == 'PMS'])
         tgt_pmg = len(df_filtered[df_filtered['Tipe_PM'] == 'PMG'])
@@ -261,11 +231,57 @@ if uploaded_files:
         act_total = act_pms + act_pmg
         
         pct_total = (act_total / tgt_total * 100) if tgt_total > 0 else 0
+        pct_pms = (act_pms / tgt_pms * 100) if tgt_pms > 0 else 0
+        pct_pmg = (act_pmg / tgt_pmg * 100) if tgt_pmg > 0 else 0
 
         col1, col2, col3 = st.columns(3)
         col1.metric("🎯 Total Target Pekerjaan", f"{tgt_total} Unit", f"PMS: {tgt_pms} Site | PMG: {tgt_pmg} Genset", delta_color="off")
         col2.metric("✅ Total Terealisasi", f"{act_total} Unit", f"PMS: {act_pms} Site | PMG: {act_pmg} Genset", delta_color="off")
         col3.metric("📈 Progres Keseluruhan", f"{pct_total:.2f}%")
+
+        st.markdown("<hr style='margin: 15px 0px 25px 0px;'>", unsafe_allow_html=True)
+
+        # ==========================================
+        # 6. AUTO GENERATE REPORT (WHATSAPP READY)
+        # ==========================================
+        df_sub_only = df_filtered[df_filtered['Is_Selesai']].copy()
+        if not df_sub_only.empty:
+            df_sub_only['Submitted Date'] = pd.to_datetime(df_sub_only['Submitted Date'], errors='coerce')
+            
+            available_dates = sorted(df_sub_only['Submitted Date'].dropna().dt.date.unique(), reverse=True)
+            
+            st.markdown("### 📱 Export Report (Siap Kirim WhatsApp)")
+            col_date, _ = st.columns([1, 3])
+            with col_date:
+                selected_date = st.selectbox("Pilih Tanggal Tarikan Data:", available_dates)
+            
+            if selected_date:
+                df_last = df_sub_only[df_sub_only['Submitted Date'].dt.date == selected_date]
+                count_pms = len(df_last[df_last['Tipe_PM'] == 'PMS'])
+                count_pmg = len(df_last[df_last['Tipe_PM'] == 'PMG'])
+                total_last = count_pms + count_pmg
+                
+                date_str = selected_date.strftime('%d %B %Y')
+                
+                wa_report = f"""📊 *UPDATE PROGRESS PM HARIAN (SIRAPI)* 📊
+🗓️ Tanggal Update: {date_str}
+
+Berdasarkan data terbaru, rekap penambahan realisasi PM yang berhasil disubmit pada tanggal tersebut:
+
+✅ *Realisasi Harian: {total_last} Unit*
+🗼 PMS: {count_pms} Site
+⚡ PMG: {count_pmg} Genset
+
+📈 *STATUS PENCAPAIAN KUMULATIF*
+🎯 Total Target Aktif: {tgt_total} Unit
+✅ Total Terealisasi: {act_total} Unit ({pct_total:.2f}%)
+🗼 PMS Terealisasi: {act_pms} / {tgt_pms} ({pct_pms:.2f}%)
+⚡ PMG Terealisasi: {act_pmg} / {tgt_pmg} ({pct_pmg:.2f}%)
+
+Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai jadwal. Terima kasih! 🙏"""
+                
+                st.info("💡 **Tips:** Arahkan kursor ke kotak di bawah, lalu klik ikon **Copy** di pojok kanan atas untuk menyalin.")
+                st.code(wa_report, language="text")
 
         st.markdown("<hr style='margin: 15px 0px 25px 0px;'>", unsafe_allow_html=True)
 
@@ -296,28 +312,7 @@ if uploaded_files:
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ==========================================
-        # 8. TABEL DAILY SUBMITTED (BERJENJANG TANGGAL)
-        # ==========================================
-        st.markdown("### 📅 Rekap Daily Submitted Berjenjang")
-        if not df_sub_only.empty:
-            df_daily = df_sub_only.groupby(['Submitted Date', 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
-            if 'PMS' not in df_daily.columns: df_daily['PMS'] = 0
-            if 'PMG' not in df_daily.columns: df_daily['PMG'] = 0
-            
-            df_daily['Total Disubmit'] = df_daily['PMS'] + df_daily['PMG']
-            df_daily = df_daily.sort_values('Submitted Date', ascending=False)
-            df_daily['Submitted Date'] = df_daily['Submitted Date'].dt.strftime('%d %B %Y')
-            df_daily.columns = ['Tanggal Submit', 'Selesai PMG (Genset)', 'Selesai PMS (Site)', 'Total Disubmit Hari Itu']
-            
-            df_daily = df_daily[['Tanggal Submit', 'Selesai PMS (Site)', 'Selesai PMG (Genset)', 'Total Disubmit Hari Itu']]
-            st.dataframe(df_daily, use_container_width=True, hide_index=True)
-        else:
-            st.warning("Belum ada data dengan status terealisasi (selesai).")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # ==========================================
-        # 9. LEADERBOARD & DETAIL DATA
+        # 8. LEADERBOARD (Dipindah ke atas Tabel Daily)
         # ==========================================
         st.markdown("### 🏆 Peringkat Pencapaian per NOP")
         df_leaderboard = generate_leaderboard(df_filtered, selected_completed)
@@ -333,6 +328,58 @@ if uploaded_files:
         if not df_leaderboard.empty:
             styled_df = df_leaderboard.style.apply(style_leaderboard, axis=1).format({"% Ach": "{:.0%}"})
             st.dataframe(styled_df, use_container_width=True, hide_index=True, height=int(35.2 * (len(df_leaderboard) + 1)))
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ==========================================
+        # 9. TABEL DAILY SUBMITTED (Dirinci dengan NOP)
+        # ==========================================
+        st.markdown("### 📅 Rekap Daily Submitted Berjenjang per NOP")
+        if not df_sub_only.empty:
+            # Group by Tanggal dan NOP
+            df_daily = df_sub_only.groupby(['Submitted Date', 'NOP', 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
+            
+            if 'PMS' not in df_daily.columns: df_daily['PMS'] = 0
+            if 'PMG' not in df_daily.columns: df_daily['PMG'] = 0
+            
+            df_daily['Total Disubmit'] = df_daily['PMS'] + df_daily['PMG']
+            df_daily = df_daily.sort_values(by=['Submitted Date', 'NOP'], ascending=[False, True])
+            
+            df_daily['Submitted Date'] = df_daily['Submitted Date'].dt.strftime('%d %B %Y')
+            df_daily.columns = ['Tanggal Submit', 'NOP', 'Selesai PMG (Genset)', 'Selesai PMS (Site)', 'Total Disubmit']
+            
+            df_daily = df_daily[['Tanggal Submit', 'NOP', 'Selesai PMS (Site)', 'Selesai PMG (Genset)', 'Total Disubmit']]
+            st.dataframe(df_daily, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Belum ada data dengan status terealisasi (selesai).")
+
+        st.markdown("<hr style='margin: 15px 0px 25px 0px;'>", unsafe_allow_html=True)
+
+        # ==========================================
+        # 10. DETAIL RAW DATA (DENGAN TAB PENDING PMS/PMG)
+        # ==========================================
+        st.markdown("### 📋 Detail Data Ticket (Monitor Sisa / Pending Pekerjaan)")
+        
+        tab_all, tab_pending_pms, tab_pending_pmg = st.tabs([
+            "🗃️ Keseluruhan Data", 
+            "🗼 Sisa / Pending PMS", 
+            "⚡ Sisa / Pending PMG"
+        ])
+        
+        with tab_all:
+            st.dataframe(df_filtered, use_container_width=True)
+            
+        with tab_pending_pms:
+            # Filter hanya Tipe PMS & Statusnya Belum Selesai (Is_Selesai == False)
+            df_pending_pms = df_filtered[(df_filtered['Tipe_PM'] == 'PMS') & (~df_filtered['Is_Selesai'])]
+            st.caption(f"Menampilkan total {len(df_pending_pms)} site PMS yang masih pending (belum mencapai status Selesai yang dipilih).")
+            st.dataframe(df_pending_pms, use_container_width=True)
+            
+        with tab_pending_pmg:
+            # Filter hanya Tipe PMG & Statusnya Belum Selesai (Is_Selesai == False)
+            df_pending_pmg = df_filtered[(df_filtered['Tipe_PM'] == 'PMG') & (~df_filtered['Is_Selesai'])]
+            st.caption(f"Menampilkan total {len(df_pending_pmg)} genset PMG yang masih pending (belum mencapai status Selesai yang dipilih).")
+            st.dataframe(df_pending_pmg, use_container_width=True)
 
     except Exception as e:
         st.error(f"❌ Terjadi kesalahan saat memproses file: {e}")
