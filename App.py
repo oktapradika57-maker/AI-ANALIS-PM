@@ -42,6 +42,17 @@ st.markdown('<div class="sub-header">Monitoring Preventive Maintenance Terpisah 
 # ==========================================
 # 2. FUNGSI PENGOLAH DATA UTAMA
 # ==========================================
+def translate_month(date_obj):
+    """Menerjemahkan nama bulan ke Bahasa Indonesia"""
+    months_id = {
+        'January': 'Januari', 'February': 'Februari', 'March': 'Maret',
+        'April': 'April', 'May': 'Mei', 'June': 'Juni', 'July': 'Juli',
+        'August': 'Agustus', 'September': 'September', 'October': 'Oktober',
+        'November': 'November', 'December': 'Desember'
+    }
+    month_en = date_obj.strftime('%B')
+    return date_obj.strftime('%d ') + months_id.get(month_en, month_en) + date_obj.strftime(' %Y')
+
 def assign_tipe_pm(filename):
     f_upper = str(filename).upper()
     if 'SITE' in f_upper or 'PMS' in f_upper:
@@ -155,19 +166,15 @@ def draw_scurve_chart(timeline_df, title, unit_text):
     fig.add_trace(go.Scatter(x=timeline_df['Date'], y=timeline_df['Target_Kumulatif'], mode='lines', name='Plan Kumulatif (%)', line=dict(color='#0f4c75', width=3, dash='dash')), secondary_y=False)
     fig.add_trace(go.Scatter(x=timeline_df['Date'], y=timeline_df['Actual_Kumulatif_Plot'], mode='lines+markers', name='Actual Kumulatif (%)', line=dict(color='#2ca02c', width=4), marker=dict(size=6, color='#2ca02c'), fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.1)'), secondary_y=False)
     
-    # ---------------------------------------------------------
-    # FITUR BARU: LABEL ANGKA OTOMATIS TANPA KLIK
-    # ---------------------------------------------------------
+    # LABEL ANGKA OTOMATIS
     last_actual_idx = timeline_df['Actual_Kumulatif_Plot'].last_valid_index()
     if last_actual_idx is not None:
         last_x = timeline_df.loc[last_actual_idx, 'Date']
         last_y = timeline_df.loc[last_actual_idx, 'Actual_Kumulatif_Plot']
         fig.add_annotation(
-            x=last_x, y=last_y,
-            text=f"<b>{last_y:.1f}%</b>",
+            x=last_x, y=last_y, text=f"<b>{last_y:.1f}%</b>",
             showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, arrowcolor="#2ca02c",
-            ax=-40, ay=-30,
-            font=dict(color="white", size=12),
+            ax=-40, ay=-30, font=dict(color="white", size=12),
             bgcolor="#2ca02c", bordercolor="#2ca02c", borderwidth=1, borderpad=4
         )
         
@@ -176,14 +183,11 @@ def draw_scurve_chart(timeline_df, title, unit_text):
         last_x_tgt = timeline_df.loc[last_tgt_idx, 'Date']
         last_y_tgt = timeline_df.loc[last_tgt_idx, 'Target_Kumulatif']
         fig.add_annotation(
-            x=last_x_tgt, y=last_y_tgt,
-            text=f"<b>{last_y_tgt:.1f}%</b>",
+            x=last_x_tgt, y=last_y_tgt, text=f"<b>{last_y_tgt:.1f}%</b>",
             showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, arrowcolor="#0f4c75",
-            ax=-40, ay=30,
-            font=dict(color="white", size=12),
+            ax=-40, ay=30, font=dict(color="white", size=12),
             bgcolor="#0f4c75", bordercolor="#0f4c75", borderwidth=1, borderpad=4
         )
-    # ---------------------------------------------------------
 
     fig.update_layout(title=dict(text=title, font=dict(size=18, color='#333333')), hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), height=450, margin=dict(l=30, r=30, t=50, b=30), plot_bgcolor='white', paper_bgcolor='white')
     fig.update_xaxes(title_text="", tickformat="%d %b", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
@@ -292,7 +296,7 @@ if uploaded_files:
                 count_pmg = len(df_last[df_last['Tipe_PM'] == 'PMG'])
                 total_last = count_pms + count_pmg
                 
-                date_str = selected_date.strftime('%d %B %Y')
+                date_str = translate_month(selected_date)
                 
                 wa_report = f"""📊 *UPDATE PROGRESS PM HARIAN (SiPM)* 📊
 🗓️ Tanggal Update: {date_str}
@@ -343,17 +347,15 @@ Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai 
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ==========================================
-        # 8. FITUR BARU: GRAFIK TREN DAILY (BAR CHART)
+        # 8. GRAFIK TREN DAILY (BAR CHART)
         # ==========================================
         st.markdown("### 📈 Grafik Tren Daily Realisasi (Selesai)")
         if not df_sub_only.empty:
-            # Grouping by Tanggal dan Tipe PM
             df_daily_chart = df_sub_only.groupby([df_sub_only['Submitted Date'].dt.date, 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
             
             if 'PMS' not in df_daily_chart.columns: df_daily_chart['PMS'] = 0
             if 'PMG' not in df_daily_chart.columns: df_daily_chart['PMG'] = 0
             
-            # Membuat Bar Chart Bersandingan (Grouped Bar Chart)
             fig_daily = go.Figure()
             fig_daily.add_trace(go.Bar(
                 x=df_daily_chart['Submitted Date'], y=df_daily_chart['PMS'], 
@@ -368,12 +370,8 @@ Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai 
             
             fig_daily.update_layout(
                 title=dict(text="<b>Volume Realisasi Harian (PMS vs PMG)</b>", font=dict(size=18, color='#333333')),
-                barmode='group',
-                hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                height=400,
-                margin=dict(l=30, r=30, t=50, b=30),
-                plot_bgcolor='white', paper_bgcolor='white'
+                barmode='group', hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                height=400, margin=dict(l=30, r=30, t=50, b=30), plot_bgcolor='white', paper_bgcolor='white'
             )
             fig_daily.update_xaxes(title_text="Tanggal Submit", tickformat="%d %b %Y", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
             fig_daily.update_yaxes(title_text="Volume (Unit)", showgrid=True, gridcolor='#f1f5f9', linecolor='#cbd5e1')
@@ -405,23 +403,59 @@ Mohon kerja samanya untuk terus mengawal progress penyelesaian pekerjaan sesuai 
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ==========================================
-        # 10. TABEL DAILY SUBMITTED (Dirinci dengan NOP)
+        # 10. TABEL DAILY SUBMITTED (BENTUK HIERARKI / JENJANG)
         # ==========================================
         st.markdown("### 📅 Rekap Daily Submitted Berjenjang per NOP")
         if not df_sub_only.empty:
-            df_daily = df_sub_only.groupby(['Submitted Date', 'NOP', 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
+            # Mengelompokkan data berdasarkan tanggal dan NOP
+            df_daily_raw = df_sub_only.groupby([df_sub_only['Submitted Date'].dt.date, 'NOP', 'Tipe_PM']).size().unstack(fill_value=0).reset_index()
             
-            if 'PMS' not in df_daily.columns: df_daily['PMS'] = 0
-            if 'PMG' not in df_daily.columns: df_daily['PMG'] = 0
+            if 'PMS' not in df_daily_raw.columns: df_daily_raw['PMS'] = 0
+            if 'PMG' not in df_daily_raw.columns: df_daily_raw['PMG'] = 0
             
-            df_daily['Total Disubmit'] = df_daily['PMS'] + df_daily['PMG']
-            df_daily = df_daily.sort_values(by=['Submitted Date', 'NOP'], ascending=[False, True])
+            # Membuat list of dictionary untuk bentuk hierarki
+            daily_records = []
+            unique_dates = sorted(df_sub_only['Submitted Date'].dt.date.unique(), reverse=True)
             
-            df_daily['Submitted Date'] = df_daily['Submitted Date'].dt.strftime('%d %B %Y')
-            df_daily.columns = ['Tanggal Submit', 'NOP', 'Selesai PMG (Genset)', 'Selesai PMS (Site)', 'Total Disubmit']
+            for d in unique_dates:
+                df_d = df_daily_raw[df_daily_raw['Submitted Date'] == d]
+                date_str = translate_month(d)
+                
+                total_pms_day = df_d['PMS'].sum()
+                total_pmg_day = df_d['PMG'].sum()
+                total_day = total_pms_day + total_pmg_day
+                
+                # Tambahkan Baris Header Tanggal (Total)
+                daily_records.append({
+                    'Tanggal Submit': f"🗓️ {date_str}",
+                    'NOP': 'TOTAL HARIAN',
+                    'Selesai PMS (Site)': total_pms_day,
+                    'Selesai PMG (Genset)': total_pmg_day,
+                    'Total Disubmit': total_day
+                })
+                
+                # Tambahkan Baris Rincian NOP di bawah tanggal tersebut
+                for _, row in df_d.sort_values('NOP').iterrows():
+                    total_nop = row['PMS'] + row['PMG']
+                    daily_records.append({
+                        'Tanggal Submit': "", 
+                        'NOP': f"↳ {row['NOP']}",
+                        'Selesai PMS (Site)': row['PMS'],
+                        'Selesai PMG (Genset)': row['PMG'],
+                        'Total Disubmit': total_nop
+                    })
+                    
+            df_daily_grouped = pd.DataFrame(daily_records)
             
-            df_daily = df_daily[['Tanggal Submit', 'NOP', 'Selesai PMS (Site)', 'Selesai PMG (Genset)', 'Total Disubmit']]
-            st.dataframe(df_daily, use_container_width=True, hide_index=True)
+            # Styling untuk memberikan highlight pada baris header (TOTAL HARIAN)
+            def style_daily_table(row):
+                if row['NOP'] == 'TOTAL HARIAN':
+                    return ['background-color: #d9e1f2; font-weight: bold; color: black; border-top: 2px solid #0f4c75;'] * len(row)
+                else:
+                    return ['background-color: #ffffff; color: #495057;'] * len(row)
+                    
+            styled_daily_df = df_daily_grouped.style.apply(style_daily_table, axis=1)
+            st.dataframe(styled_daily_df, use_container_width=True, hide_index=True)
         else:
             st.warning("Belum ada data dengan status terealisasi (selesai).")
 
